@@ -1,0 +1,59 @@
+import hashlib
+import pickle 
+import shutil
+from pathlib import Path
+import config 
+
+class TensorCache:
+    def __init__(self, metric, cache_dir=None):
+        self.metric = metric
+        self.memory = {}
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else config.CACHE_DIR
+        self.cache_dir.mkdir(exist_ok=True)
+        self.metric_id = self._build_metric_hash()
+        self.path = self.cache_dir / self.metric_id 
+        self.path.mkdir(exist_ok=True)
+
+    def _build_metric_hash(self):
+        """Hash para la metrica segun sus parametros y coordenadas"""
+        txt = (repr(self.metric.g)
+                + repr(self.metric.coords)
+                + repr(self.metric.params))
+        return hashlib.sha256(txt.encode()).hexdigest()[:16]
+
+    def save(self, name, obj):
+        """Guarda un objeto en la cache de la metrica"""
+        self.memory[name] = obj
+        filename = self.path / f"{name}.pkl"
+        with open(filename, "wb") as f:
+            pickle.dump(obj, f)
+
+    def load(self, name):
+        """Carga un objeto de la cache de la metrica"""
+        if name in self.memory:
+            return self.memory[name]
+        filename = self.path / f"{name}.pkl"
+        if filename.exists():
+            with open(filename, "rb") as f:
+                obj = pickle.load(f)
+            self.memory[name] = obj
+            return obj
+        return None
+
+    def exists(self, name):
+        """Verifica si un objeto existe en la cache de la metrica"""
+        if name in self.memory:
+            return True
+        filename = self.path / f"{name}.pkl"
+        return filename.exists()
+
+    def clear(self):
+        """Borra el cache de la metrica"""
+        self.memory.clear()
+
+    def clear_disk(self):
+        """Borra completamente el cache de la metrica"""
+        self.memory.clear()
+        if self.path.exists():
+            shutil.rmtree(self.path)
+        self.path.mkdir(exist_ok=True)
