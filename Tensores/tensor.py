@@ -13,12 +13,34 @@ class Tensor:
         return self.data.get(index, sp.Integer(0))
 
     def __setitem__(self, index, value):
+        if value == 0:
+            self._remove(index)
+            return
+        if index in self.data:
+            self.data[index] = value
+            return
+
         self.data[index] = value
         for axis, idx in enumerate(index):
-            self.index[axis].setdefault(idx, []).append(index)
+            self.index[axis].setdefault(idx, set()).add(index)
+
+    def _remove(self, index):
+        if index not in self.data:
+            return
+        
+        del self.data[index]
+        for axis, idx in enumerate(index):
+            candidates = self.index[axis].get(idx)
+            
+            if candidates is None:
+                continue
+
+            candidates.discard(index)
+            if not candidates:
+                del self.index[axis][idx]
 
     def by_index(self, axis, value):
-        return self.index[axis].get(value, [])
+        return self.index[axis].get(value, set())
 
     def select(self, filters=None):
         if filters is None:
@@ -73,6 +95,7 @@ class Tensor:
 
     def clear(self):
         self.data.clear()
+        self.index = [{} for _ in range(self.rank)]
 
     def __repr__(self):
         return (f"{self.__class__.__name__}"

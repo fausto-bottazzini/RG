@@ -4,7 +4,9 @@ from Tensores.tensor import Tensor
 def suma(A, B):
     if A.rank != B.rank:
         raise ValueError("Los tensores deben tener el mismo rango para sumarse.")
-
+    if A.dim != B.dim:
+        raise ValueError("Los tensores deben tener la misma dimensión para sumarse.")
+    
     C = Tensor(rank=A.rank, dim=A.dim)
 
     for idx, value in A.items():
