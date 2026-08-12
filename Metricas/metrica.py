@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
 import sympy as sp
 
-from Tensores.numerico import CacheNumerico 
-from Tensores.cache import TensorCache
+from Tensores.cache import TensorCache, CacheNumerico 
 from Tensores.tensor import Tensor
 
 from Tensores.derivadas import DerivadasMetrica, DerivadasChristoffel
@@ -109,29 +108,27 @@ class Metrica(ABC):
         return R.value
 
     def borrar_cache(self):
-        """Borra el cache en RAM"""
-        self._numeric.clear()
+        """Borra los caches en RAM."""
         self.cache.clear()
+        self.numeric_cache.clear()
 
     def borrar_cache_numerico(self):
-        self._numeric.clear()
+        """Borra únicamente el cache numérico en RAM."""
+        self.numeric_cache.clear()
 
     def borrar_cache_disco(self):
-        """Borra el cache en disco"""
+        """Borra el cache simbólico almacenado en disco."""
         self.cache.clear_disk()
-        self._numeric.clear()
+        self.numeric_cache.clear()
 
-    def numeric(self, name):
+    def numeric(self, name, modules="numpy"):
         """
-        Devuelve una representación numérica cacheada de una cantidad
-        tensorial.
+        Devuelve las funciones numéricas cacheadas de una cantidad tensorial.
 
-        Las expresiones se convierten a funciones NumPy mediante lambdify.
-        Se utiliza CSE para reutilizar subexpresiones comunes entre componentes.
+        Las expresiones simbólicas se calculan mediante las propiedades
+        de la métrica y luego se convierten a funciones numéricas mediante
+        CacheNumerico.
         """
-
-        if name in self._numeric:
-            return self._numeric[name]
 
         if name == "metric":
             tensor = self.g
@@ -139,8 +136,14 @@ class Metrica(ABC):
         elif name == "inverse_metric":
             tensor = self.g_inv
 
+        elif name == "derivadas":
+            tensor = self.derivadas()
+
         elif name == "christoffel":
             tensor = self.christoffel()
+
+        elif name == "derivadas_christoffel":
+            tensor = self.derivadas_christoffel()
 
         elif name == "riemann":
             tensor = self.riemann()
@@ -151,18 +154,5 @@ class Metrica(ABC):
         else:
             raise ValueError(f"Cantidad numérica desconocida: {name}")
 
-        items = list(tensor.items())
-
-        indices = [idx for idx, _ in items]
-        expressions = [expr for _, expr in items]
-
-        function = sp.lambdify(self.coords, expressions, modules="numpy", cse=True)
-
-        def evaluate(*values):
-            result = function(*values)
-            return {idx: value for idx, value in zip(indices, result)}
-
-        self._numeric[name] = evaluate
-
-        return evaluate
+        return self.numeric_cache.get(name, tensor, modules=modules)
 
