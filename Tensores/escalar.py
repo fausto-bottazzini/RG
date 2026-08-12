@@ -7,6 +7,11 @@ class EscalarCurvatura:
         self.metrica = metrica
         self.value = self.compute()
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("metrica", None)
+        return state
+
     def compute(self):
         g_inv = self.metrica.g_inv
         Ricci = self.metrica.ricci()

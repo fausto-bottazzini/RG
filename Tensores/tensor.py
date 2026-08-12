@@ -1,13 +1,18 @@
 import sympy as sp
 
 class Tensor:
-    """Clase para cualquier tensor. Administra almacenamiento"""
+    """Clase para cualquier tensor simbólico. Administra almacenamiento"""
 
     def __init__(self, rank, dim):
         self.rank = rank
         self.dim = dim
         self.index = [{} for _ in range(rank)]
         self.data = {}
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("metrica", None)
+        return state
 
     def __getitem__(self, index):
         return self.data.get(index, sp.Integer(0))
@@ -100,3 +105,53 @@ class Tensor:
     def __repr__(self):
         return (f"{self.__class__.__name__}"
                 f"(rank={self.rank}, dim={self.dim}, nnz={self.nnz})")
+
+
+class TensorNumerico:
+    """
+    Representación numérica de un tensor sparse.
+
+    Cada componente se almacena como una función numérica
+    obtenida mediante lambdify.
+    """
+
+    def __init__(self, metric, rank, dim, funciones):
+        self.metrica = metric
+        self.rank = rank
+        self.dim = dim
+        self._data = funciones
+
+    def __getitem__(self, idx):
+        return self._data[idx]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def items(self):
+        return self._data.items()
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def __len__(self):
+        return len(self._data)
+
+    @property
+    def indices(self):
+        return self._data.keys()
+
+    def evaluar_componente(self, idx, *coords):
+        """Evalúa un único componente en las coordenadas dadas."""
+        return self._data[idx](*coords)
+
+    def evaluar(self, *coords):
+        """
+        Evalúa todos los componentes almacenados.
+
+        Devuelve un diccionario:
+            índice -> valor numérico
+        """
+        return {idx: funcion(*coords) for idx, funcion in self._data.items()}

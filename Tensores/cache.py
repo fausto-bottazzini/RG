@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 import sympy as sp
 import config 
+from Tensores.tensor import TensorNumerico
 
 class TensorCache:
     def __init__(self, metric, cache_dir=None):
@@ -37,6 +38,10 @@ class TensorCache:
         if filename.exists():
             with open(filename, "rb") as f:
                 obj = pickle.load(f)
+
+            if hasattr(obj, "metrica"):
+                obj.metrica = self.metric
+
             self.memory[name] = obj
             return obj
         return None
@@ -72,8 +77,10 @@ class CacheNumerico:
         funciones = {}
         for idx, expr in tensor.items():
             funciones[idx] = sp.lambdify(self.metric.coords, expr, modules=modules, cse=True)
-        self.memory[name] = funciones
-        return funciones
+
+        numeric_tensor = TensorNumerico(metric=self.metric, rank=tensor.rank, dim=tensor.dim, funciones=funciones)
+        self.memory[name] = numeric_tensor
+        return numeric_tensor
 
     def clear(self):
         self.memory.clear()
