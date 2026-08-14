@@ -111,41 +111,26 @@ class TensorNumerico:
     """
     Representación numérica de un tensor sparse.
 
-    Cada componente se almacena como una función numérica
-    obtenida mediante lambdify.
+    Los índices no nulos se mantienen en un orden fijo y
+    una única función numérica evalúa simultáneamente todos
+    sus componentes.
     """
 
-    def __init__(self, metric, rank, dim, funciones):
+    def __init__(self, metric, rank, dim, indices, funcion):
         self.metrica = metric
         self.rank = rank
         self.dim = dim
-        self._data = funciones
-
-    def __getitem__(self, idx):
-        return self._data[idx]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def items(self):
-        return self._data.items()
-
-    def keys(self):
-        return self._data.keys()
-
-    def values(self):
-        return self._data.values()
-
-    def __len__(self):
-        return len(self._data)
+        self._indices = tuple(indices)
+        self._funcion = funcion
+        self._index_map = {idx: i for i, idx in enumerate(self._indices)}
 
     @property
     def indices(self):
-        return self._data.keys()
+        return self._indices
 
-    def evaluar_componente(self, idx, *coords):
-        """Evalúa un único componente en las coordenadas dadas."""
-        return self._data[idx](*coords)
+    @property
+    def nnz(self):
+        return len(self._indices)
 
     def evaluar(self, *coords):
         """
@@ -154,4 +139,41 @@ class TensorNumerico:
         Devuelve un diccionario:
             índice -> valor numérico
         """
-        return {idx: funcion(*coords) for idx, funcion in self._data.items()}
+        valores = self._funcion(*coords)
+        return dict(zip(self._indices, valores))
+
+    def evaluar_componente(self, idx, *coords):
+        valores = self._funcion(*coords)
+        pos = self._index_map.get(idx)
+        if pos is None:
+            return 0.0
+        return valores[pos]
+
+    def evaluar_valores(self, *coords):
+        """
+        Evalúa todos los componentes no nulos.
+        El orden coincide con indices.
+        """
+        return self._funcion(*coords)
+
+    def __iter__(self):
+        return iter(self._indices)
+
+    def __len__(self):
+        return len(self._indices)
+
+    def keys(self):
+        return self._indices
+
+    def values(self):
+        return self.evaluar_valores()
+
+    def items(self):
+        valores = self.evaluar_valores()
+        return zip(self._indices, valores)
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}" f"(rank={self.rank}, dim={self.dim}, nnz={self.nnz})")
+
+
+

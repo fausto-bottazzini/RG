@@ -74,11 +74,12 @@ class CacheNumerico:
         if name in self.memory:
             return self.memory[name]
 
-        funciones = {}
-        for idx, expr in tensor.items():
-            funciones[idx] = sp.lambdify(self.metric.coords, expr, modules=modules, cse=True)
+        indices = tuple(tensor.keys())
+        expressions = tuple(tensor[idx] for idx in indices)
 
-        numeric_tensor = TensorNumerico(metric=self.metric, rank=tensor.rank, dim=tensor.dim, funciones=funciones)
+        funcion = sp.lambdify(self.metric.coords, expressions, modules=modules, cse=True)
+        numeric_tensor = TensorNumerico(metric=self.metric, rank=tensor.rank, dim=tensor.dim, indices=indices, funcion=funcion)
+
         self.memory[name] = numeric_tensor
         return numeric_tensor
 

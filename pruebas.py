@@ -1,16 +1,10 @@
-from Metricas.kerr import Kerr
 from Metricas.schwarzschild import Schwarzschild
-from Visualizador.embedding import Embedding
-import sympy as sp
-import matplotlib.pyplot as plt
 
-M = sp.symbols("M")
-a = sp.symbols("a")
+g = Schwarzschild(1)
 
-metric = Schwarzschild(1)
+Gamma = g.numeric("christoffel")
 
-embedding = Embedding(metric)
-
-fig, ax = embedding.plot(rmax=15)
-
-plt.show()
+print(Gamma)
+print(Gamma.indices)
+print(Gamma.evaluar(0.0, 10.0, 1.0, 0.5))
+print(Gamma.evaluar_valores(0.0, 10.0, 1.0, 0.5))

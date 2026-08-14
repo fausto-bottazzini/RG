@@ -1,5 +1,5 @@
 import sympy as sp
-from .metrica import Metrica
+from Tensores.metrica import Metrica
 from Tensores.tensor import Tensor
 
 class ReissnerNordstrom(Metrica):
