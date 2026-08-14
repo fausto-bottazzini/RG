@@ -42,7 +42,5 @@ class SolverGeodesica:
         y0[:self.dim] = x0
         y0[self.dim:] = u0
 
-        evaluator = self.evaluator
-
         return solve_ivp(self._rhs, intervalo, y0, method=metodo, rtol=rtol, atol=atol, max_step=max_step)
 

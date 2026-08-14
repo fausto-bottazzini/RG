@@ -19,16 +19,28 @@ class Invariantes:
             g[idx] = valor
         return g
 
-    def norma(self, y):
-        """Calcula u^2"""
+    def _momento_covariante(self, g, u):
+        return g @ u
+
+    def evaluar(self, y):
+        """Evalua los diagnósticos principales. U^2, E, L, Q."""
         y = np.asarray(y, dtype=float)
         coords = y[:self.dim]
         u = y[self.dim:]
         g = self._metric_matrix(coords)
-        return np.einsum("ij,i,j->", g, u, u)
+        p = self._momento_covariante(g, u)
+        norma = np.dot(p, u)
+        energia = -p[0]
+        momento_angular = p[3]
+        carter = self._carter(coords, p, norma, energia, momento_angular)
+        return {"norma": norma, "energia": energia, "momento_angular": momento_angular, "carter": carter}
+
+    def norma(self, y):
+        """Calcula u^2"""
+        return self.evaluar(y)["norma"]
 
     def killing(self, y, vector):
-        """Cantidad conservada asociada al vector de killing."""
+        """Cantidad conservada asociada a un vector de killing."""
         y = np.asarray(y, dtype=float)
         coords = y[:self.dim]
         u = y[self.dim:]
@@ -38,11 +50,7 @@ class Invariantes:
 
     def energia(self, y):
         """Energia asociada al killing temporal."""
-        y = np.asarray(y, dtype=float)
-        coords = y[:self.dim]
-        u = y[self.dim:]
-        g = self._metric_matrix(coords)
-        return -np.dot(g[0], u)
+        return self.evaluar(y)["energia"]
 
     def momento_angular(self, y, indice=3):
         """Cantidad conservada asociada a una coordenada cíclica, phi = x^3."""
@@ -52,38 +60,52 @@ class Invariantes:
         g = self._metric_matrix(coords)
         return np.dot(g[indice], u)
 
-    def evaluar(self, y):
-        """Devuelve los diagnósticos principales."""
-        return {"norma": self.norma(y), "energia": self.energia(y), "momento_angular": self.momento_angular(y)}
+    def _carter(self, coords, p, norma, energia, momento_angular):
+        """Constante de Carter para Kerr en coords de Boyer-Lindquist."""
+        if "a" not in self.metrica.params:
+            return np.nan
+        a = float(self.metrica.params["a"])
+        theta = coords[2]
+        mu2 = -norma
+        p_theta = p[2]
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+        return (p_theta**2 + cos_theta**2 * (a**2 * (mu2 - energia**2) + momento_angular**2 / sin_theta**2))
 
     def trayectoria(self, resultado):
         """Evalúa las invariantes sobre toda la trayectoria."""
         estados = resultado.y.T
-        norma = np.empty(len(estados), dtype=float)
-        energia = np.empty(len(estados), dtype=float)
-        momento = np.empty(len(estados), dtype=float)
+        n = len(estados)
+        norma = np.empty(n, dtype=float)
+        energia = np.empty(n, dtype=float)
+        momento = np.empty(n, dtype=float)
+        carter = np.empty(n, dtype=float)
 
         for i, estado in enumerate(estados):
             valores = self.evaluar(estado)
             norma[i] = valores["norma"]
             energia[i] = valores["energia"]
             momento[i] = valores["momento_angular"]
+            carter[i] = valores["carter"]
 
         return {"lambda": resultado.t,
                 "norma": norma,
                 "energia": energia,
-                "momento_angular": momento}
+                "momento_angular": momento,
+                "carter": carter}
 
     def errores(self, resultado):
         """Calcula la desviación de cada invariante respecto de su valor inicial."""
         datos = self.trayectoria(resultado)
         errores={}
-        for nombre in ("norma", "energia", "momento_angular"):
+        nombres = ("norma", "energia", "momento_angular", "carter")
+        for nombre in nombres:
             valores = datos[nombre]
             inicial = valores[0]
-            errores[nombre] = {"absoluto": np.abs(valores - inicial),
-                               "max_absoluto": np.max(np.abs(valores - inicial))}
+            diferencia = np.abs(valores - inicial)
             escala = max(abs(inicial), np.finfo(float).eps)
-            errores[nombre]["relativo"] = (np.abs(valores - inicial) / escala)
-            errores[nombre]["max_relativo"] = np.max(errores[nombre]["relativo"])
+            errores[nombre] = {"absoluto": diferencia,
+                               "max_absoluto": np.max(diferencia),
+                               "relativo": diferencia / escala, 
+                               "max_relativo": np.max(diferencia / escala)}
         return errores

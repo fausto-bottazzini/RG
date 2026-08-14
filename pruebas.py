@@ -3,7 +3,7 @@ import numpy as np
 
 from Metricas.kerr import Kerr
 from Solver.solver import SolverGeodesica
-
+from Solver.invariantes import Invariantes
 
 # ============================================================
 # CONFIGURACIÓN
@@ -171,8 +171,91 @@ print(resultado.y[:, -1])
 
 
 # ============================================================
-# FIN
+# INVARIANTES
 # ============================================================
 
 print()
 print("=" * 60)
+print("INVARIANTES")
+print("=" * 60)
+
+invariantes = Invariantes(metric)
+
+datos = invariantes.trayectoria(resultado)
+errores = invariantes.errores(resultado)
+
+
+print()
+print("Valores iniciales:")
+
+print(
+    f"  norma           : "
+    f"{datos['norma'][0]: .12e}"
+)
+
+print(
+    f"  energia         : "
+    f"{datos['energia'][0]: .12e}"
+)
+
+print(
+    f"  momento angular : "
+    f"{datos['momento_angular'][0]: .12e}"
+)
+
+print(
+    f"  Carter Q        : "
+    f"{datos['carter'][0]: .12e}"
+)
+
+estado_inicial = y0
+
+g0 = invariantes._metric_matrix(estado_inicial[:4])
+u0_check = estado_inicial[4:]
+
+p0 = g0 @ u0_check
+
+print()
+print("Chequeo Carter:")
+
+print(
+    f"  g_theta_theta   : "
+    f"{g0[2, 2]: .12e}"
+)
+
+print(
+    f"  u^theta         : "
+    f"{u0_check[2]: .12e}"
+)
+
+print(
+    f"  p_theta         : "
+    f"{p0[2]: .12e}"
+)
+
+print(
+    f"  p_theta^2       : "
+    f"{p0[2]**2: .12e}"
+)
+
+print(
+    f"  Carter calculado : "
+    f"{datos['carter'][0]: .12e}"
+)
+
+
+print()
+print("Errores máximos:")
+
+for nombre, etiqueta in (
+    ("norma", "norma"),
+    ("energia", "energia"),
+    ("momento_angular", "momento angular"),
+    ("carter", "Carter Q"),
+):
+
+    print(
+        f"  {etiqueta:<16}: "
+        f"abs = {errores[nombre]['max_absoluto']:.6e}   "
+        f"rel = {errores[nombre]['max_relativo']:.6e}"
+    )
