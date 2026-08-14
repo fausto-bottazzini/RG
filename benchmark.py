@@ -2,572 +2,291 @@ import time
 import numpy as np
 
 from Metricas.schwarzschild import Schwarzschild
-from Solver.geodesica import GeodesicaEvaluator
 from Solver.solver import SolverGeodesica
+from Solver.invariantes import Invariantes
 
 
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
 
-N = 100_000
-REPETICIONES = 7
+M = 1.0
 
-M = 1
+RTOLS = [
+    1e-6,
+    1e-7,
+    1e-8,
+    1e-9,
+    1e-10,
+]
 
-X0 = np.array(
-    [
-        0.0,
-        10.0,
-        np.pi / 2,
-        0.0,
-    ],
-    dtype=float,
-)
+ATOL_FACTOR = 1e-2
 
-U0 = np.array(
-    [
-        1.2,
-        -0.05,
-        0.02,
-        0.08,
-    ],
-    dtype=float,
-)
+METODO = "DOP853"
 
-INTERVALO = (
-    0.0,
-    100.0,
-)
-
-RTOL = 1e-12
-ATOL = 1e-14
+INTERVALO = (0.0, 5000.0)
 
 
 # ============================================================
-# FUNCIONES AUXILIARES
+# CASOS
 # ============================================================
 
-def medir(func, n=N, repeticiones=REPETICIONES):
+CASOS = {
 
-    tiempos = []
+    "orbita circular": {
 
-    for _ in range(repeticiones):
+        "x0": np.array([
+            0.0,
+            10.0,
+            np.pi / 2,
+            0.0,
+        ]),
 
-        t0 = time.perf_counter()
-
-        for _ in range(n):
-            func()
-
-        tiempos.append(
-            time.perf_counter() - t0
-        )
-
-    tiempos = np.asarray(
-        tiempos,
-        dtype=float,
-    )
-
-    mediana = np.median(tiempos)
-
-    return (
-        tiempos,
-        mediana,
-        n / mediana,
-    )
+        "u0": np.array([
+            1.19522861,
+            0.0,
+            0.0,
+            0.03779645,
+        ]),
+    },
 
 
-def imprimir_medicion(tiempos, mediana, rate):
+    "orbita no circular": {
 
-    for i, tiempo in enumerate(
-        tiempos,
-        start=1,
-    ):
-        print(
-            f"  run {i}: "
-            f"{tiempo:.6f} s"
-        )
+        "x0": np.array([
+            0.0,
+            10.0,
+            np.pi / 2,
+            0.0,
+        ]),
 
-    print()
-    print(
-        f"  mediana: "
-        f"{mediana:.6f} s"
-    )
+        "u0": np.array([
+            1.2,
+            -0.05,
+            0.02,
+            0.08,
+        ]),
+    },
 
-    print(
-        f"  rate:    "
-        f"{rate:,.0f} eval/s"
-    )
 
-    print(
-        f"  variación: "
-        f"{np.std(tiempos) / mediana * 100:.2f}%"
-    )
+    "fuerte campo": {
+
+        "x0": np.array([
+            0.0,
+            5.0,
+            np.pi / 2,
+            0.0,
+        ]),
+
+        "u0": np.array([
+            1.1,
+            -0.05,
+            0.01,
+            0.15,
+        ]),
+    },
+}
 
 
 # ============================================================
-# CONSTRUCCIÓN
+# MÉTRICA
 # ============================================================
-
-print("=" * 60)
-print("CONSTRUCCIÓN")
-print("=" * 60)
 
 metric = Schwarzschild(M=M)
 
-t0 = time.perf_counter()
+solver = SolverGeodesica(metric)
 
-evaluator = GeodesicaEvaluator(
-    metric
-)
-
-t_evaluator = time.perf_counter() - t0
-
-
-t0 = time.perf_counter()
-
-solver = SolverGeodesica(
-    metric
-)
-
-t_solver = time.perf_counter() - t0
-
-
-print()
-print(
-    f"GeodesicaEvaluator : "
-    f"{t_evaluator:.6f} s"
-)
-
-print(
-    f"SolverGeodesica    : "
-    f"{t_solver:.6f} s"
-)
+inv = Invariantes(metric)
 
 
 # ============================================================
-# ESTADO
+# REFERENCIA
 # ============================================================
 
-y = np.empty(
-    2 * evaluator.dim,
-    dtype=float,
-)
+def construir_referencia(x0, u0):
 
-y[:evaluator.dim] = X0
-y[evaluator.dim:] = U0
-
-
-out = np.empty_like(y)
-
-
-# ============================================================
-# VERIFICACIÓN DE RHS
-# ============================================================
-
-print()
-print("=" * 60)
-print("VERIFICACIÓN")
-print("=" * 60)
-
-evaluator.sistema(
-    y,
-    out,
-)
-
-rhs_solver = solver._rhs(
-    0.0,
-    y,
-)
-
-print()
-print("evaluator.sistema():")
-print(out)
-
-print()
-print("solver._rhs():")
-print(rhs_solver)
-
-if not np.allclose(
-    out,
-    rhs_solver,
-    rtol=1e-13,
-    atol=1e-15,
-):
-
-    raise RuntimeError(
-        "evaluator.sistema() y "
-        "solver._rhs() no coinciden"
-    )
-
-print()
-print("✓ RHS coinciden")
-
-
-# ============================================================
-# WARM-UP
-# ============================================================
-
-for _ in range(10_000):
-
-    evaluator.sistema(
-        y,
-        out,
-    )
-
-    solver._rhs(
-        0.0,
-        y,
-    )
-
-
-# ============================================================
-# BENCHMARK 1
-# EVALUATOR
-# ============================================================
-
-print()
-print("=" * 60)
-print("BENCHMARK EVALUATOR")
-print("=" * 60)
-
-tiempos_evaluator, mediana_evaluator, rate_evaluator = medir(
-    lambda: evaluator.sistema(
-        y,
-        out,
-    )
-)
-
-print()
-
-imprimir_medicion(
-    tiempos_evaluator,
-    mediana_evaluator,
-    rate_evaluator,
-)
-
-
-# ============================================================
-# BENCHMARK 2
-# SOLVER._rhs
-# ============================================================
-
-print()
-print("=" * 60)
-print("BENCHMARK SOLVER._rhs")
-print("=" * 60)
-
-tiempos_rhs, mediana_rhs, rate_rhs = medir(
-    lambda: solver._rhs(
-        0.0,
-        y,
-    )
-)
-
-print()
-
-imprimir_medicion(
-    tiempos_rhs,
-    mediana_rhs,
-    rate_rhs,
-)
-
-
-# ============================================================
-# COMPARACIÓN EVALUATOR → RHS
-# ============================================================
-
-print()
-print("=" * 60)
-print("OVERHEAD DEL CALLBACK")
-print("=" * 60)
-
-print(
-    f"  evaluator.sistema : "
-    f"{rate_evaluator:,.0f} eval/s"
-)
-
-print(
-    f"  solver._rhs       : "
-    f"{rate_rhs:,.0f} eval/s"
-)
-
-print()
-
-print(
-    f"  overhead relativo: "
-    f"{rate_evaluator / rate_rhs:.2f}x"
-)
-
-
-# ============================================================
-# BENCHMARK 3
-# SOLVE_IVP
-# ============================================================
-
-print()
-print("=" * 60)
-print("BENCHMARK SOLVE_IVP")
-print("=" * 60)
-
-# Warm-up de integración
-solver.resolver(
-    X0,
-    U0,
-    INTERVALO,
-    metodo="DOP853",
-    rtol=RTOL,
-    atol=ATOL,
-)
-
-
-tiempos_ivp = []
-resultados = []
-
-for _ in range(REPETICIONES):
-
-    t0 = time.perf_counter()
-
-    resultado = solver.resolver(
-        X0,
-        U0,
+    return solver.resolver(
+        x0,
+        u0,
         INTERVALO,
-        metodo="DOP853",
-        rtol=RTOL,
-        atol=ATOL,
+        metodo=METODO,
+        rtol=1e-13,
+        atol=1e-15,
     )
 
-    elapsed = time.perf_counter() - t0
-
-    tiempos_ivp.append(
-        elapsed
-    )
-
-    resultados.append(
-        resultado
-    )
-
-
-tiempos_ivp = np.asarray(
-    tiempos_ivp,
-    dtype=float,
-)
-
-mediana_ivp = np.median(
-    tiempos_ivp
-)
-
-resultado = resultados[
-    np.argmin(
-        np.abs(
-            tiempos_ivp
-            - mediana_ivp
-        )
-    )
-]
-
-print()
-
-for i, tiempo in enumerate(
-    tiempos_ivp,
-    start=1,
-):
-
-    print(
-        f"  run {i}: "
-        f"{tiempo:.6f} s"
-    )
-
-print()
-
-print(
-    f"  mediana: "
-    f"{mediana_ivp:.6f} s"
-)
-
-print(
-    f"  variación: "
-    f"{np.std(tiempos_ivp) / mediana_ivp * 100:.2f}%"
-)
-
-print()
-
-print(
-    f"  éxito:       "
-    f"{resultado.success}"
-)
-
-print(
-    f"  estado:      "
-    f"{resultado.status}"
-)
-
-print(
-    f"  evaluaciones: "
-    f"{resultado.nfev:,}"
-)
-
-print(
-    f"  pasos:        "
-    f"{len(resultado.t):,}"
-)
-
-print(
-    f"  lambda final: "
-    f"{resultado.t[-1]:.8f}"
-)
-
-print()
-
-print(
-    f"  RHS/s:        "
-    f"{resultado.nfev / mediana_ivp:,.0f}"
-)
 
 # ============================================================
-# BENCHMARK 530 CALLS
+# ERROR DE ESTADO
 # ============================================================
 
-print()
-print("=" * 60)
-print("BENCHMARK 530 CALLS _rhs")
-print("=" * 60)
+def error_estado(resultado, referencia):
 
-N_CALLS = resultado.nfev
+    y = resultado.y[:, -1]
+    y_ref = referencia.y[:, -1]
 
-tiempos_calls = []
+    escala = np.maximum(
+        np.abs(y_ref),
+        1.0,
+    )
 
-for _ in range(REPETICIONES):
+    return np.max(
+        np.abs(y - y_ref) / escala
+    )
+
+
+# ============================================================
+# EJECUCIÓN DE UN CASO
+# ============================================================
+
+def benchmark_caso(nombre, x0, u0):
+
+    print()
+    print("=" * 80)
+    print(nombre.upper())
+    print("=" * 80)
+
+    # --------------------------------------------------------
+    # Referencia
+    # --------------------------------------------------------
+
+    print()
+    print("REFERENCIA")
 
     t0 = time.perf_counter()
 
-    for _ in range(N_CALLS):
-
-        solver._rhs(
-            0.0,
-            y,
-        )
-
-    elapsed = time.perf_counter() - t0
-
-    tiempos_calls.append(
-        elapsed
+    referencia = construir_referencia(
+        x0,
+        u0,
     )
 
-tiempos_calls = np.asarray(
-    tiempos_calls,
-    dtype=float,
-)
-
-mediana_calls = np.median(
-    tiempos_calls
-)
-
-print()
-
-for i, tiempo in enumerate(
-    tiempos_calls,
-    start=1,
-):
+    tiempo_ref = time.perf_counter() - t0
 
     print(
-        f"  run {i}: "
-        f"{tiempo:.8f} s"
+        f"  tiempo      : {tiempo_ref:.6f} s"
     )
 
-print()
+    print(
+        f"  nfev        : {referencia.nfev}"
+    )
 
-print(
-    f"  mediana: "
-    f"{mediana_calls:.8f} s"
-)
+    print(
+        f"  pasos       : {len(referencia.t)}"
+    )
 
-print(
-    f"  tiempo/RHS: "
-    f"{mediana_calls / N_CALLS * 1e6:.2f} µs"
-)
+    # --------------------------------------------------------
+    # Cabecera
+    # --------------------------------------------------------
 
-print(
-    f"  RHS/s: "
-    f"{N_CALLS / mediana_calls:,.0f}"
-)
+    print()
+    print(
+        f"{'rtol':>10}"
+        f"{'tiempo':>12}"
+        f"{'nfev':>8}"
+        f"{'pasos':>8}"
+        f"{'err estado':>15}"
+        f"{'Δnorma':>15}"
+        f"{'ΔE':>15}"
+        f"{'ΔL':>15}"
+    )
 
-print()
+    print("-" * 80)
 
-print(
-    f"  solve_ivp: "
-    f"{mediana_ivp:.8f} s"
-)
+    # --------------------------------------------------------
+    # Benchmark
+    # --------------------------------------------------------
 
-print(
-    f"  overhead solve_ivp: "
-    f"{mediana_ivp - mediana_calls:.8f} s"
-)
+    for rtol in RTOLS:
 
-print(
-    f"  factor: "
-    f"{mediana_ivp / mediana_calls:.2f}x"
-)
+        atol = rtol * ATOL_FACTOR
 
-print("=" * 60)
+        t0 = time.perf_counter()
+
+        resultado = solver.resolver(
+            x0,
+            u0,
+            INTERVALO,
+            metodo=METODO,
+            rtol=rtol,
+            atol=atol,
+        )
+
+        tiempo = time.perf_counter() - t0
+
+        # --------------------------------------------
+        # Error contra referencia
+        # --------------------------------------------
+
+        err_y = error_estado(
+            resultado,
+            referencia,
+        )
+
+        # --------------------------------------------
+        # Conservación
+        # --------------------------------------------
+
+        errores = inv.errores(
+            resultado
+        )
+
+        d_norma = errores[
+            "norma"
+        ]["max_absoluto"]
+
+        d_energia = errores[
+            "energia"
+        ]["max_absoluto"]
+
+        d_momento = errores[
+            "momento_angular"
+        ]["max_absoluto"]
+
+        # --------------------------------------------
+        # Resultado
+        # --------------------------------------------
+
+        print(
+            f"{rtol:10.1e}"
+            f"{tiempo:12.6f}"
+            f"{resultado.nfev:8d}"
+            f"{len(resultado.t):8d}"
+            f"{err_y:15.3e}"
+            f"{d_norma:15.3e}"
+            f"{d_energia:15.3e}"
+            f"{d_momento:15.3e}"
+        )
 
 
 # ============================================================
-# COMPARACIÓN FINAL
+# EJECUTAR TODOS LOS CASOS
 # ============================================================
 
 print()
-print("=" * 60)
-print("COMPARACIÓN FINAL")
-print("=" * 60)
+print("=" * 80)
+print("BENCHMARK DE REGÍMENES — SCHWARZSCHILD")
+print("=" * 80)
 
 print()
-print(
-    f"Evaluator.sistema()"
-)
+print(f"Método : {METODO}")
+print(f"M      : {M}")
+print(f"λ      : {INTERVALO}")
+print(f"Casos  : {len(CASOS)}")
 
-print(
-    f"  {rate_evaluator:,.0f} eval/s"
-)
 
-print()
-print(
-    f"Solver._rhs()"
-)
+for nombre, datos in CASOS.items():
 
-print(
-    f"  {rate_rhs:,.0f} eval/s"
-)
+    benchmark_caso(
+        nombre,
+        datos["x0"],
+        datos["u0"],
+    )
 
-print()
-print(
-    f"solve_ivp"
-)
 
-print(
-    f"  {resultado.nfev / mediana_ivp:,.0f} RHS/s"
-)
+# ============================================================
+# FIN
+# ============================================================
 
 print()
-
-print(
-    "Relaciones:"
-)
-
-print(
-    f"  evaluator / _rhs : "
-    f"{rate_evaluator / rate_rhs:.2f}x"
-)
-
-print(
-    f"  _rhs / solve_ivp : "
-    f"{rate_rhs / (resultado.nfev / mediana_ivp):.2f}x"
-)
-
-print(
-    f"  evaluator / solve_ivp : "
-    f"{rate_evaluator / (resultado.nfev / mediana_ivp):.2f}x"
-)
-
-print()
-print("=" * 60)
+print("=" * 80)
+print("FIN DEL BENCHMARK")
+print("=" * 80)
