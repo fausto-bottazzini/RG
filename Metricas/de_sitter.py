@@ -13,5 +13,4 @@ class DeSitter(Metrica):
         Lambda = self.params["Lambda"]
         _, r, theta, _ = self.coords
         f = 1 - Lambda*r**2/3
-        return Tensor.from_matrix(
-            sp.diag(-f, 1/f, r**2, r**2*sp.sin(theta)**2))
+        return Tensor.from_matrix(sp.diag(-f, 1/f, r**2, r**2*sp.sin(theta)**2))
