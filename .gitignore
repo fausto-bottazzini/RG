@@ -53,11 +53,6 @@ Thumbs.db
 *.tmp
 *.bak
 
-# Generated figures
-figures/
-plots/
-animations/
-
 # Generated data
 output/
 results/
