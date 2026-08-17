@@ -210,3 +210,10 @@ class Embedding:
         ax.set_title("Embedding isométrico")
         ax.set_box_aspect((np.ptp(X), np.ptp(Y), max(np.ptp(Z), np.finfo(float).eps)))
         return fig, ax
+
+    def profile(self, q_values):
+        """Evalúa el perfil del embedding para los valores de q dados."""
+        q_values = np.asarray(q_values, dtype=float)
+        rho = np.interp(q_values, self._q_profile, self._rho_profile)
+        z = np.interp(q_values, self._q_profile, self._z_profile)
+        return rho, z

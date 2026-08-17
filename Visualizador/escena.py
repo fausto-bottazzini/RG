@@ -46,9 +46,7 @@ class Visualizador3D:
             self._surface = self.embedding.surface(self.qmin, self.qmax, nq=self.nq, nphi=self.nphi)
         return self._surface
 
-    _build_surface = build_surface
-
-    def _ensure_axes(self, ax=None):
+    def ensure_axes(self, ax=None):
         if ax is not None:
             self._ax = ax
             self._fig = ax.figure
@@ -82,16 +80,24 @@ class Visualizador3D:
         if nombre is None:
             nombre = f"Geodésica {len(self._geodesicas) + 1}"
 
-        self._geodesicas.append(
-            _GeodesicaVisual(
-                resultado = resultado,
-                x = x, y = y, z = z,
-                nombre = str(nombre),
-                color = color,
-                linewidth = float(linewidth),
-                particle_size = float(particle_size)))
-        
-        return self
+        geo = _GeodesicaVisual(
+            resultado=resultado,
+            x=x,
+            y=y,
+            z=z,
+            nombre=str(nombre),
+            color=color,
+            linewidth=float(linewidth),
+            particle_size=float(particle_size),
+        )
+
+        self._geodesicas.append(geo)
+
+        return geo
+
+    @property
+    def geodesicas(self):
+        return tuple(self._geodesicas)
 
     def clear_geodesicas(self):
         """Elimina todas las trayectorias de la escena."""
@@ -106,7 +112,7 @@ class Visualizador3D:
             else:
                 yield geo.color
 
-    def _style_axes(self, ax, *, title=None, elev=28, azim=-55, grid=False):
+    def style_axes(self, ax, *, title=None, elev=28, azim=-55, grid=False):
         ax.set_xlabel("X", labelpad=8)
         ax.set_ylabel("Y", labelpad=8)
         ax.set_zlabel("Z", labelpad=8)
@@ -221,7 +227,7 @@ class Visualizador3D:
         """Dibuja una escena estática lista para presentación."""
         self.build_surface()
         X, Y, Z = self._surface
-        fig, ax = self._ensure_axes(ax)
+        fig, ax = self.ensure_axes(ax)
 
         ax.plot_surface(
             X, Y, Z,
@@ -241,7 +247,7 @@ class Visualizador3D:
             ax.scatter([geo.x[-1]], [geo.y[-1]], [geo.z[-1]], color=color, s=geo.particle_size*0.65, edgecolor="white", linewidth=1.2, depthshade=True, zorder=15)
             handles.append(line)
 
-        self._style_axes(ax, title=title, elev=elev, azim=azim, grid=grid)
+        self.style_axes(ax, title=title, elev=elev, azim=azim, grid=grid)
 
         if show_legend and handles:
             ax.legend(loc="upper left", frameon=True, framealpha=0.9)
@@ -261,7 +267,7 @@ class Visualizador3D:
 
         self.build_surface()
         X, Y, Z = self._surface
-        fig, ax = self._ensure_axes()
+        fig, ax = self.ensure_axes()
 
         ax.plot_surface(
             X, Y, Z,
@@ -307,7 +313,7 @@ class Visualizador3D:
 
             return updated
 
-        self._style_axes(ax, title=title, elev=elev, azim=azim, grid=False)
+        self.style_axes(ax, title=title, elev=elev, azim=azim, grid=False)
         if show_legend:
             ax.legend(loc="upper left", frameon=True, framealpha=0.9)
 

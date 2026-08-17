@@ -13,13 +13,7 @@ from Solver.invariantes import Condiciones
 
 from Visualizador.embedding import Embedding
 from Visualizador.escena import Visualizador3D
-
-def construir_geodesica(solver, condiciones, r0, vr, vphi, *, lambda_max=5100.0):
-    """Construye una geodésica nula. La componente temporal se normaliza automáticamente."""
-    x0 = np.array([0.0, r0, np.pi / 2, 0.0,], dtype=float)
-    u0 = condiciones.normalizar(x0, np.array([1.0, vr, 0.0, vphi], dtype=float), tipo="null", componente=0, signo=+1)
-    resultado = solver.resolver(x0, u0, (0.0, lambda_max), metodo="DOP853", rtol=1e-9, atol=1e-11)
-    return resultado
+from Plots.Embedding._common import construir_geodesica
 
 def main(ani=False, save=False):
     M = 1.0
@@ -42,12 +36,12 @@ def main(ani=False, save=False):
     ]
 
     for r0, vr, vphi, nombre in configuraciones:
-        resultado = construir_geodesica(solver, condiciones, r0, vr, vphi)
+        resultado = construir_geodesica(solver, condiciones, r0, vr, vphi, tipo="null", lambda_max=5100.0)
         if resultado.y.shape[1] >= 2:
             escena.add_geodesica(resultado, nombre=nombre, linewidth=1, particle_size=7, color="khaki")
 
     if not ani:
-        fig, ax = escena._ensure_axes()
+        fig, ax = escena.ensure_axes()
         ax.set_axis_off()
         fig.patch.set_facecolor("black")
         ax.set_facecolor("black")
@@ -66,7 +60,7 @@ def main(ani=False, save=False):
     # Animación
     # ----------------------------------------------------------
 
-    fig, ax = escena._ensure_axes()
+    fig, ax = escena.ensure_axes()
     ax.set_axis_off()
     fig.patch.set_facecolor("black")
     ax.set_facecolor("black")

@@ -52,13 +52,7 @@ def agregar_frame_dragging(embedding, rmin, rmax, nr=12, nphi=18, arrow_scale=1.
     """
     r_values = np.linspace(rmin, rmax, nr)
     phi_values = np.linspace(0.0, 2.0 * np.pi, nphi, endpoint=False)
-
-    r_profile = embedding._q_profile
-    rho_profile = embedding._rho_profile
-    z_profile = embedding._z_profile
-
-    rho_values = np.interp(r_values, r_profile, rho_profile)
-    z_values = np.interp(r_values, r_profile, z_profile)
+    rho_values, z_values = embedding.profile(r_values)
 
     omega_values = omega_frame_dragging( embedding.metrica, r_values)
     omega_max = np.max(np.abs(omega_values))
@@ -104,16 +98,16 @@ def dibujar_frame_dragging(ax, campo, fase=0.0, arrow_scale=1.5):
 def animar_kerr(escena, campo, *, frames=600, interval=30, trail_length=500, elev=30, azim=-55):
     """Animación completa."""
 
-    if not escena._geodesicas:
-        raise ValueError("No hay geodésicas para animar.")
+    if not escena.geodesicas:
+        raise ValueError("No hay geodesicas para animar.")
     
-    X, Y, Z = escena._build_surface()
-    fig, ax = escena._ensure_axes()
+    X, Y, Z = escena.build_surface()
+    fig, ax = escena.ensure_axes()
     ax.plot_surface(X, Y, Z, cmap=escena.cmap, alpha=0.38, linewidth=0, antialiased=True, rcount=min(escena.nq, 220), ccount=min(escena.nphi, 140))
 
     dibujar_frame_dragging(ax, campo, fase=0.0, arrow_scale=1.5)
 
-    geo = escena._geodesicas[0]
+    geo = escena.geodesicas[0]
     t = np.asarray(getattr(geo.resultado, "t", np.arange(len(geo.x))), dtype=float)
 
     if len(t) != len(geo.x):
@@ -155,14 +149,13 @@ def animar_kerr(escena, campo, *, frames=600, interval=30, trail_length=500, ele
 
         return line, particle
     
-    escena._style_axes(ax, title=None, elev=elev, azim=azim, grid=False)
+    escena.style_axes(ax, title=None, elev=elev, azim=azim, grid=False)
     ax.view_init(elev=elev, azim=azim)
     ax.set_axis_off()
     fig.patch.set_facecolor("black")
     ax.set_facecolor("black")
 
     animation = FuncAnimation(fig, update, frames=len(timeline), interval=interval, blit=False, repeat=True)
-    escena._animation = animation
     return animation
 
 def main(save=False, ani=False):
@@ -181,9 +174,15 @@ def main(save=False, ani=False):
     y_h = rho_h * np.sin(phi_h)
     z_h_line = np.full_like(phi_h, z_h)
 
+    fig, ax = escena.draw(title=None, surface_alpha=0.38, elev=30, azim=-55, show_legend=False, show=False)
+    dibujar_frame_dragging(ax, campo, fase=0.0, arrow_scale=1.5)
+    ax.plot(x_h, y_h, z_h_line, linewidth=0.5, color="white", alpha=0.5)
+    fig.patch.set_facecolor("black")
+    ax.set_facecolor("black")
+    ax.set_axis_off()
+
     if ani:
         animacion = animar_kerr(escena, campo, frames=steps, interval=30, trail_length=30, elev=30, azim=-55)
-        ax = escena._ax
         ax.plot(x_h, y_h, z_h_line, linewidth=0.5, color="white", alpha=0.85)
 
         if save:
@@ -193,13 +192,6 @@ def main(save=False, ani=False):
             print("Animación guardada en: {output}")
             plt.show()
             return
-
-    fig, ax = escena.draw(title=None, surface_alpha=0.38, elev=30, azim=-55, show_legend=False, show=False)
-    dibujar_frame_dragging(ax, campo, fase=0.0, arrow_scale=1.5)
-    ax.plot(x_h, y_h, z_h_line, linewidth=0.5, color="white", alpha=0.5)
-    fig.patch.set_facecolor("black")
-    ax.set_facecolor("black")
-    ax.set_axis_off()
 
     if save:
         output = ROOT / "Plots" / "graficos" / "kerr_frame_dragging.png"
@@ -211,4 +203,4 @@ def main(save=False, ani=False):
 
 
 if __name__ == "__main__":
-    main(save=False, ani=False)
+    main(save=False, ani=True)
