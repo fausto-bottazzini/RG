@@ -45,7 +45,7 @@ def omega_frame_dragging(metric, r):
     g_phiphi = ((r**2 + a**2 + 2.0 * M * r * a**2 * np.sin(theta)**2 / Sigma) * np.sin(theta)**2)
     return -g_tphi / g_phiphi
 
-def agregar_frame_dragging(embedding, rmin, rmax, nr=12, nphi=18, arrow_scale=1.2):
+def agregar_frame_dragging(embedding, rmin, rmax, nr=12, nphi=18):
     """Dibuja el campo de arrastre sobre la superficie.
     Las flechas son tangentes a las órbitas azimutales.
     Su módulo representa omega(r).
@@ -164,11 +164,12 @@ def main(save=False, ani=False):
     escena = Visualizador3D(embedding, qmin=R_MIN, qmax=R_MAX, nq=NQ, nphi=NPHI, cmap="inferno_r")
     resultado = construir_geodesica(metric, R0, VR, VPHI)
     escena.add_geodesica(resultado, nombre="Geodésica", color="white", linewidth=0.8, particle_size=2)
-    campo = agregar_frame_dragging(embedding, R_MIN + 0.15, R_MAX, nr=10, nphi=20, arrow_scale=1.5)
+    campo = agregar_frame_dragging(embedding, R_MIN + 0.15, R_MAX, nr=10, nphi=20)
 
     r_plus = M + np.sqrt(M**2 - a**2)
-    rho_h = np.interp(r_plus, embedding._q_profile, embedding._rho_profile)
-    z_h = np.interp(r_plus, embedding._q_profile, embedding._z_profile)
+    rho_h, z_h = embedding.profile(np.array([r_plus]))
+    rho_h = rho_h[0]
+    z_h = z_h[0]
     phi_h = np.linspace(0, 2 * np.pi, 200)
     x_h = rho_h * np.cos(phi_h)
     y_h = rho_h * np.sin(phi_h)
@@ -189,7 +190,7 @@ def main(save=False, ani=False):
             output = ROOT / "Plots" / "graficos" / "kerr_frame_dragging.mp4"
             output.parent.mkdir(parents=True, exist_ok=True)
             animacion.save(output, writer="ffmpeg", fps=30, dpi=100, bitrate=8000)
-            print("Animación guardada en: {output}")
+            print(f"Animación guardada en: {output}")
             plt.show()
             return
 

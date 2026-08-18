@@ -17,7 +17,6 @@ from Plots.Embedding._common import construir_geodesica
 
 def main(ani=False, save=False):
     M = 1.0
-    a = 0.8
     metrica = Schwarzschild(M=M)
 
     print("=" * 70)
