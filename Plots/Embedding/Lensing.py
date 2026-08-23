@@ -12,7 +12,7 @@ from Solver.solver import SolverGeodesica
 from Solver.invariantes import Condiciones
 
 from Visualizador.embedding import Embedding
-from Visualizador.escena import Visualizador3D
+from Visualizador.escena import Visualizador2D
 from Plots.Embedding._common import construir_geodesica
 
 def main(ani=False, save=False):
@@ -26,7 +26,7 @@ def main(ani=False, save=False):
     solver = SolverGeodesica(metrica)
     condiciones = Condiciones(metrica)
     embedding = Embedding(metrica, coordenadas=(1, 3), fijas={0: 0.0, 2: np.pi / 2})
-    escena = Visualizador3D(embedding, qmin=2.001, qmax=200.0, nq=80, nphi=36, figsize=(9, 16), cmap="inferno_r")
+    escena = Visualizador2D(embedding, qmin=2.001, qmax=200.0, nq=80, nphi=36, figsize=(9, 16), cmap="inferno_r")
     configuraciones = [
         (170.0, -0.1, 0.00005, "Ray 1"),
         (170.0, -0.1, 0.00008, "Ray 2"), 

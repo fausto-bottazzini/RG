@@ -12,7 +12,7 @@ from Metricas.kerr import Kerr
 from Solver.solver import SolverGeodesica
 from Solver.invariantes import Condiciones
 from Visualizador.embedding import Embedding
-from Visualizador.escena import Visualizador3D
+from Visualizador.escena import Visualizador2D
 from matplotlib.animation import FuncAnimation
 
 M = 1.0
@@ -161,7 +161,7 @@ def animar_kerr(escena, campo, *, frames=600, interval=30, trail_length=500, ele
 def main(save=False, ani=False):
     metric = Kerr(M=M, a=a)
     embedding = Embedding(metric, coordenadas=(1, 3), fijas={0: 0.0, 2: np.pi / 2})
-    escena = Visualizador3D(embedding, qmin=R_MIN, qmax=R_MAX, nq=NQ, nphi=NPHI, cmap="inferno_r")
+    escena = Visualizador2D(embedding, qmin=R_MIN, qmax=R_MAX, nq=NQ, nphi=NPHI, cmap="inferno_r")
     resultado = construir_geodesica(metric, R0, VR, VPHI)
     escena.add_geodesica(resultado, nombre="Geodésica", color="white", linewidth=0.8, particle_size=2)
     campo = agregar_frame_dragging(embedding, R_MIN + 0.15, R_MAX, nr=10, nphi=20)

@@ -17,7 +17,7 @@ class _GeodesicaVisual:
     particle_size: float
 
 
-class Visualizador3D:
+class Visualizador2D:
     """Escena 3D para un embedding y una o varias geodésicas."""
 
     def __init__(self, embedding, qmin, qmax, *, nq=300, nphi=160, figsize=(11, 9), cmap="viridis"):
