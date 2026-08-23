@@ -112,7 +112,7 @@ class SolverRayTracing:
     def rhs(self, y):
         y = np.asarray(y, dtype=float)
         if y.ndim != 2:
-            return ValueError("y debe tener la forma (N, 2*dim).")
+            raise ValueError("y debe tener la forma (N, 2*dim).")
         if y.shape[1] != 2*self.dim:
             raise ValueError(f"y debe tener {2*self.dim} columnas.")
 
@@ -173,17 +173,15 @@ class SolverRayTracing:
 
     def resolver(self, y0, *, lambda_max, h0=0.01, h_min=1e-8, h_max=np.inf, max_steps=1_000_000):
         y = np.asarray(y0, dtype=float).copy()
+
         if y.ndim != 2:
             raise ValueError("y0 debe tener forma (N, 2*dim).")
-
         if y.shape[1] != 2 * self.dim:
             raise ValueError(f"y0 debe tener {2 * self.dim} columnas.")
 
         N = len(y)
-
         parametro = np.zeros(N)
         h = np.full(N, h0)
-
         pasos_aceptados = np.zeros(N, dtype=int)
         pasos_rechazados = np.zeros(N, dtype=int)
 
@@ -191,8 +189,8 @@ class SolverRayTracing:
             activos = parametro < lambda_max
             if not np.any(activos):
                 break
-            indices = np.flatnonzero(activos)
 
+            indices = np.flatnonzero(activos)
             y_act = y[indices]
             h_act = h[indices]
 
@@ -200,8 +198,8 @@ class SolverRayTracing:
 
             h_act = np.minimum(h_act, restante)
             y_new, error = self._rk45(y_act, h_act)
-            aceptado = error <= 1.0
 
+            aceptado = error <= 1.0
             if np.any(~aceptado):
                 idx = indices[~aceptado]
                 factor = self._factor_paso(error[~aceptado], np.zeros(np.sum(~aceptado), dtype=bool))
@@ -226,100 +224,3 @@ class SolverRayTracing:
             pasos_rechazados=pasos_rechazados,
         )   
 
-    def resolver_pro(self, y0, *, lambda_max, h0=0.01, h_min=1e-8, h_max=np.inf, eventos=(), max_steps=1_000_000):
-        y0 = np.asarray(y0, dtype=float)
-
-        if y0.ndim != 2:
-            raise ValueError("y0 debe tener fomra (N, 2*dim).")
-        if y0.shape[1] != 2 * self.dim:
-            raise ValueError(f"y0 debe tener {2*self.dim} columnas.")
-
-        N = len(y0)
-        y = y0.copy()
-        parametro = np.zeros(N, dtype=float)
-        h = np.full(N, float(h0), dtype=float)
-        h = np.minimum(h, h_max)
-        status = np.full(N, STATUS_ACTIVE, dtype=np.int8)
-        pasos_aceptados = np.zeros(N, dtype=np.int64)
-        pasos_rechazados = np.zeros(N, dtype=np.int64)
-        eventos = tuple(eventos)
-
-        for _ in range(max_steps):
-            activos = status == STATUS_ACTIVE
-            if not np.any(activos):
-                break
-
-            indices = np.flatnonzero(activos)
-            y_act = y[indices]
-            h_act = h[indices]
-            restante = (float(lambda_max) - parametro[indices])
-            h_act = np.minimum(h_act, restante)
-
-            y_new, error = self._rk45(y_act, h_act)
-            aceptado = error <= 1.0
-            rechazados = ~aceptado
-
-            # rechazados
-            if np.any(rechazados):
-                local = indices[rechazados]
-                factor = self._factor_paso(error[rechazados], np.zeros(np.sum(rechazados), dtype=bool))
-                h[local] *= factor
-                pasos_rechazados[local] += 1
-                fallan = h[local] < h_min
-                if np.any(fallan):
-                    status[local[fallan]] = STATUS_STEP_FAILURE
-
-            # aceptados
-            if not np.any(aceptado):
-                continue
-            local = indices[aceptado]
-
-            y_prev = y_act[aceptado]
-            y_next = y_new[aceptado]
-            h_next = h_act[aceptado]
-            error_next = error[aceptado]
-
-            # eventos
-            evento_alpha = np.full(len(local), np.inf, dtype=float)
-            evento_code = np.full(len(local), -1, dtype=np.int8)
-
-            for evento in eventos:
-                detectado, alpha = evento.detect(y_prev, y_next)
-                tomar = (detectado & (alpha < evento_alpha))
-                evento_alpha[tomar] = alpha[tomar]
-                evento_code[tomar] = evento.code
-
-            ocurrio_evento = np.isfinite(evento_alpha)
-
-            # guardado 
-            normales = ~ocurrio_evento
-            if np.any(normales):
-                idx = local[normales]
-                y[idx] = y_next[normales]
-                parametro[idx] += (h_next[normales])
-                pasos_aceptados[idx] += 1
-
-            if np.any(ocurrio_evento):
-                idx = local[ocurrio_evento]
-                alpha = evento_alpha[ocurrio_evento]
-                y_hit = (y_prev[ocurrio_evento] + alpha[:, None] * (y_next[ocurrio_evento] - y_prev[ocurrio_evento]))
-                y[idx] = y_hit
-                parametro[idx] += (alpha * h_next[ocurrio_evento])
-                status[idx] = evento_code[ocurrio_evento]
-                pasos_aceptados += 1
-
-            # actualizar paso
-            factor = self._factor_paso(error_next, np.ones(len(error_next), dtype=bool))
-            idx = local[normales]
-            h[idx] *= factor[normales]
-            h[idx] = np.minimum(h[idx], h_max)
-
-            # llegda 
-            llego = (normales & (parametro[local] >= lambda_max - np.finfo(float).eps))
-            if np.any(llego):
-                status[local[llego]] = STATUS_MAX_LAMBDA
-            else:
-                activos = status == STATUS_ACTIVE
-                status[activos] == STATUS_STEP_FAILURE
-
-            return RayTracingResult(estado=y, status=status, parametro=parametro, pasos_aceptados=pasos_aceptados, pasos_rechazados=pasos_rechazados)

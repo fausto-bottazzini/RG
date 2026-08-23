@@ -108,4 +108,9 @@ def transformar_vector(e, v_loc):
     """Transforma un vector contravariante dado en una tétrada a la base coordenada."""
     e = np.asarray(e, dtype=float)
     v_loc = np.asarray(v_loc, dtype=float)
-    return np.einsum("a,am ->", v_loc, e)
+
+    if v_loc.ndim == 1:
+        return np.einsum("a,am->m", v_loc, e)
+    if v_loc.ndim == 2:
+        return np.einsum("na,am->nm", v_loc, e)
+    raise ValueError("v_loc debe tener forma (dim,) o (N, dim).")
