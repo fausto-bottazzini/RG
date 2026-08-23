@@ -19,19 +19,21 @@ class RayTracingResult:
     pasos_rechazados: np.ndarray
 
 class RayEvent:
-    """Evento geométrico para la terminación de rayos."""
-    code = STATUS_ESCAPE    
+    """Evento geométrico que puede terminar un rayo."""
+    code = STATUS_ESCAPE
     def detect(self, y0, y1):
         raise NotImplementedError
 
 class SurfaceEvent(RayEvent):
     """
-    Evento definido por F(y) = 0. 
-    direction = 0: cualquier curce
-    direction = +1: F pasa de negativo a positivo
-    direction = -1: F pasa de positivo a negativo
+    Evento definido por una superficie F(y) = 0.
+    direction = 0:cualquier cruce.
+    direction = +1: F pasa de negativo a positivo.
+    direction = -1: F pasa de positivo a negativo.
     """
     def __init__(self, *, direction=0):
+        if direction not in (-1, 0, +1):
+            raise ValueError("direction debe ser -1, 0 o +1.")
         self.direction = direction
 
     def value(self, y):
@@ -42,61 +44,64 @@ class SurfaceEvent(RayEvent):
         f1 = np.asarray(self.value(y1), dtype=float)
 
         if self.direction > 0:
-            mask = ((f0 < 0.0) & (f1 >= 0.0))
+            detectado = ((f0 < 0.0) & (f1 >= 0.0))
         elif self.direction < 0:
-            mask = ((f0 > 0.0) & (f1 <= 0.0))
+            detectado = ((f0 > 0.0) & (f1 <= 0.0))
         else:
-            mask = ((f0 < 0.0) & (f1 >= 0.0)) | ((f0 > 0.0) & (f1 <= 0.0))
+            detectado = (((f0 < 0.0) & (f1 >= 0.0)) | ((f0 > 0.0) & (f1 <= 0.0)))
 
-        denominator = f0 - f1
+        denominador = f1 - f0
         alpha = np.zeros_like(f0)
-        np.divide(f0, denominator, out=alpha, where=np.abs(denominator) > np.finfo(float).eps)
+        np.divide(-f0, denominador, out=alpha, where=np.abs(denominador) > np.finfo(float).eps)
         alpha = np.clip(alpha, 0.0, 1.0)
-        return mask, alpha
+        return detectado, alpha
 
 class EscapeEvent(SurfaceEvent):
-    """Termina el rayo cuando r >= r_max."""
+    """Termina el rayo cuando r alcanza r_max."""
     code = STATUS_ESCAPE
-    def __init__(self, r_max, radial_index=1):
+    def __init__(self, r_max, *, radial_index=1):
         super().__init__(direction=+1)
         self.r_max = float(r_max)
-        self.radial_index = radial_index
+        self.radial_index = int(radial_index)
 
     def value(self, y):
-        return y[:, self.radial_index] - self.r_max
+        return (y[:, self.radial_index] - self.r_max)
 
-class HorizonEvent(SurfaceEvent): # Event-Horizon xd
-    """Termina el rayo cuando r <= r_stop."""
+class HorizonEvent(SurfaceEvent):
+    """Termina el rayo cuando alcanza r_stop."""
     code = STATUS_HORIZON
-    def __init__(self, r_stop, radial_index=1):
+    def __init__(self, r_stop, *, radial_index=1):
         super().__init__(direction=-1)
         self.r_stop = float(r_stop)
-        self.radial_index = radial_index
+        self.radial_index = int(radial_index)
 
     def value(self, y):
-        return y[:, self.radial_index] - self.r_stop
+        return (y[:, self.radial_index] - self.r_stop)
 
 class DiskEvent(SurfaceEvent):
-    """Intersección con un disco ecuatorial (theta_disk).
-    La intersección solo cuenta dentro de [r_in, r_out]."""
+    """
+    Detecta el cruce de un disco ecuatorial (theta_disk)
+        r_in <= r_hit <= r_out
+    """
     code = STATUS_DISK
-    def __init__(self, r_in, r_out, *, theta_disk = np.pi/2.0, radial_index=1, theta_index=2):
+    def __init__(self, r_in, r_out, *, theta_disk=np.pi / 2.0, radial_index=1, theta_index=2):
         super().__init__(direction=0)
         self.r_in = float(r_in)
         self.r_out = float(r_out)
         self.theta_disk = float(theta_disk)
-        self.radial_index = radial_index
-        self.theta_index = theta_index
+        self.radial_index = int(radial_index)
+        self.theta_index = int(theta_index)
 
     def value(self, y):
-        return y[:, self.theta_index] - self.theta_disk
+        return (y[:, self.theta_index] - self.theta_disk)
 
     def detect(self, y0, y1):
-        mask, alpha = super().detect(y0, y1)
-        y_hit = (y0 + alpha[:, None] * (y1-y0))
+        detectado, alpha = super().detect(y0, y1)
+        y_hit = (y0 + alpha[:, None] * (y1 - y0))
         r_hit = y_hit[:, self.radial_index]
-        mask &= ((r_hit >= self.r_in)) & (r_hit <= self.r_out)
-        return mask, alpha 
+        dentro = ((r_hit >= self.r_in) & (r_hit <= self.r_out))
+        detectado &= dentro
+        return detectado, alpha 
 
 class SolverRayTracing:
     """Integrados batch para geodésicas nulas."""
@@ -171,7 +176,7 @@ class SolverRayTracing:
 
         return factor
 
-    def resolver(self, y0, *, lambda_max, h0=0.01, h_min=1e-8, h_max=np.inf, max_steps=1_000_000):
+    def resolver(self, y0, *, lambda_max, h0=0.01, h_min=1e-8, h_max=np.inf, eventos=(), max_steps=1_000_000):
         y = np.asarray(y0, dtype=float).copy()
 
         if y.ndim != 2:
@@ -180,13 +185,15 @@ class SolverRayTracing:
             raise ValueError(f"y0 debe tener {2 * self.dim} columnas.")
 
         N = len(y)
+        eventos = tuple(eventos)
         parametro = np.zeros(N)
         h = np.full(N, h0)
+        status = np.full(N, STATUS_ACTIVE, dtype=np.int8)
         pasos_aceptados = np.zeros(N, dtype=int)
         pasos_rechazados = np.zeros(N, dtype=int)
 
         for _ in range(max_steps):
-            activos = parametro < lambda_max
+            activos = status == STATUS_ACTIVE
             if not np.any(activos):
                 break
 
@@ -208,17 +215,53 @@ class SolverRayTracing:
                 pasos_rechazados[idx] += 1
 
             if np.any(aceptado):
-                idx = indices[aceptado]
-                y[idx] = y_new[aceptado]
-                parametro[idx] += h_act[aceptado]
-                pasos_aceptados[idx] += 1
-                factor = self._factor_paso(error[aceptado], np.ones(np.sum(aceptado), dtype=bool))
-                h[idx] *= factor
-                h[idx] = np.clip(h[idx], h_min, h_max)
+                local = indices[aceptado]
+                y_prev = y_act[aceptado]
+                y_next = y_new[aceptado]
+                h_next = h_act[aceptado]
+                error_next = error[aceptado]
+
+                evento_alpha = np.full(len(local), np.inf, dtype=float)
+                evento_code = np.full(len(local), -1, dtype=np.int8)
+
+                for evento in eventos:
+                    detectado, alpha = evento.detect(y_prev, y_next)
+                    tomar = (detectado & (alpha < evento_alpha))
+
+                    evento_alpha[tomar] = alpha[tomar]
+                    evento_code[tomar] = evento.code
+
+                ocurrio_evento = np.isfinite(evento_alpha)
+
+                normales = ~ocurrio_evento
+                if np.any(normales):
+                    idx = local[normales]
+                    y[idx] = y_next[normales]
+                    parametro[idx] += (h_next[normales])
+                    pasos_aceptados[idx] += 1
+
+                if np.any(ocurrio_evento):
+                    idx = local[ocurrio_evento]
+                    alpha = evento_alpha[ocurrio_evento]
+                    y_hit = (y_prev[ocurrio_evento] + alpha[:, None] * (y_next[ocurrio_evento] - y_prev[ocurrio_evento]))
+                    y[idx] = y_hit
+                    parametro[idx] += (alpha * h_next[ocurrio_evento])
+                    status[idx] = evento_code[ocurrio_evento]
+                    pasos_aceptados[idx] += 1
+
+                if np.any(normales):
+                    factor = self._factor_paso(error_next[normales], np.ones(np.sum(normales), dtype=bool))
+                    idx = local[normales]
+                    h[idx] *= factor
+                    h[idx] = np.clip(h[idx], h_min, h_max)
+
+                llego = (normales & (parametro[local] >= lambda_max - np.finfo(float).eps))
+                if np.any(llego):
+                    status[local[llego]] = STATUS_MAX_LAMBDA
 
         return RayTracingResult(
             estado=y,
-            status=np.where(parametro >= lambda_max, STATUS_MAX_LAMBDA, STATUS_ACTIVE),
+            status=status,
             parametro=parametro,
             pasos_aceptados=pasos_aceptados,
             pasos_rechazados=pasos_rechazados,
