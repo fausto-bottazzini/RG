@@ -28,7 +28,7 @@ ATOL = 1e-11
 
 H0 = 0.01
 H_MIN = 1e-10
-H_MAX = 0.1
+H_MAX = np.inf
 
 LAMBDA_MAX = 1000.0
 
@@ -85,7 +85,7 @@ def main(save=False, show=True):
 
     inicio = time.perf_counter()
 
-    resultado = solver.resolver(y0, lambda_max=LAMBDA_MAX, h0=H0, h_min=H_MIN, h_max=H_MAX, eventos=eventos)
+    resultado = solver.resolver(y0, lambda_max=LAMBDA_MAX, h0=H0, h_min=H_MIN, h_max=H_MAX, eventos=eventos, progress=True, progress_interval=10.0)
 
     tiempo = (time.perf_counter() - inicio)
 
