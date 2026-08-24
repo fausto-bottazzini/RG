@@ -31,19 +31,12 @@ from Visualizador.RayTracing.cam import Camara
 M = 1.0
 R0 = 100.0
 FOV = 60.0
-
-# La prueba es deliberadamente menor que la imagen final. Una vez elegido el
-# esquema, estos valores se pueden repetir con 250x250.
 RESOLUCION = (64, 64)
 
-# Para diagnostico fisico conviene detectar el retorno a la esfera del
-# observador. Un rayo que entra inicialmente solo puede cruzarla hacia afuera
-# despues de girar; esto evita depender de R_MAX > R0 durante el benchmark.
 R_ESCAPE = R0
 R_STOP = 2.001
 LAMBDA_MAX = 400.0
 
-# La prueba de rendimiento barre h_max. La tolerancia se puede endurecer luego.
 RTOL = 1e-7
 ATOL = 1e-9
 H0 = 0.01
@@ -122,8 +115,6 @@ def diagnostico_inicial(metrica, y0):
 
     metric_num = metrica.numeric("metric")
     valores = metric_num.evaluar_valores(*x.T)
-    # Schwarzschild es diagonal; en este punto solo necesitamos g_tt y g_phiphi.
-    # evaluar_valores puede devolver arrays para los puntos de entrada.
     mapa = {idx: np.asarray(v) for idx, v in zip(metric_num.indices, valores)}
 
     gtt = mapa[(0, 0)]
@@ -141,7 +132,7 @@ def diagnostico_inicial(metrica, y0):
     print("-" * 80)
     print(f"b_critico          = {bc:.6f}")
     print(f"b min / max        = {impact.min():.6f} / {impact.max():.6f}")
-    print(f"b mediana           = {np.median(impact):.6f}")
+    print(f"b mediana          = {np.median(impact):.6f}")
     print(f"rayos b < b_critico = {falling.sum()} / {len(impact)} ({100.0 * falling.mean():.2f} %)")
 
     if np.all(impact < bc):
@@ -179,11 +170,14 @@ def imprimir_trabajo(solver):
     print(f"95/99%/max         = {q[6]:.3e} / {q[7]:.3e} / {q[8]:.3e}")
 
 
-def run_case(metrica, y0, h_max, *, lambda_max=LAMBDA_MAX):
+def run_case(metrica, y0, h_max, *, lambda_max=LAMBDA_MAX, r_escape=None):
+    if r_escape is None:
+        r_escape = R0
+
     solver = InstrumentedSolver(metrica, rtol=RTOL, atol=ATOL)
     eventos = (
         HorizonEvent(R_STOP, radial_index=1),
-        EscapeEvent(R_ESCAPE, radial_index=1),
+        EscapeEvent(r_escape, radial_index=1),
     )
 
     inicio = time.perf_counter()
@@ -203,10 +197,7 @@ def run_case(metrica, y0, h_max, *, lambda_max=LAMBDA_MAX):
     return resultado, solver, elapsed, steps, rejected
 
 
-def imprimir_escala_por_rayo(resultado, steps, rejected):
-    active_or_terminal = np.ones(len(steps), dtype=bool)
-    del active_or_terminal
-
+def imprimir_escala_por_rayo(steps, rejected):
     print()
     print("PASOS POR RAYO")
     print("-" * 80)
@@ -230,7 +221,7 @@ def benchmark_hmax(metrica, y0):
     print("=" * 80)
     print(
         f"resolucion={RESOLUCION}, FOV={FOV} deg, r0={R0}, "
-        f"lambda_max={LAMBDA_MAX}, r_escape={R_ESCAPE}"
+        f"lambda_max={LAMBDA_MAX}, r_escape={R0}"
     )
     print(
         f"rtol={RTOL:.1e}, atol={ATOL:.1e}, h0={H0}, h_min={H_MIN}"
@@ -259,7 +250,6 @@ def benchmark_hmax(metrica, y0):
 def main():
     global RESOLUCION, FOV, R0
 
-    # Permite ampliar la prueba sin editar el archivo.
     size = int(os.environ.get("RT_TEST_SIZE", RESOLUCION[0]))
     RESOLUCION = (size, size)
     FOV = float(os.environ.get("RT_TEST_FOV", FOV))
@@ -276,13 +266,11 @@ def main():
     print(f"FOV        = {FOV} deg")
     print(f"r0         = {R0}")
     print(f"r_stop     = {R_STOP}")
-    print(f"r_escape   = {R_ESCAPE}")
+    print(f"r_escape   = {R0}")
     print(f"lambda_max = {LAMBDA_MAX}")
 
     diagnostico_inicial(metrica, y0)
 
-    # Una corrida de referencia con h_max=0.1 permite inspeccionar todos los
-    # estados y medir la distribucion de h antes del sweep.
     print()
     print("CORRIDA DE REFERENCIA")
     print("=" * 80)
@@ -290,12 +278,8 @@ def main():
     print(f"tiempo = {elapsed:.3f} s")
     imprimir_estados(resultado.status)
     imprimir_trabajo(solver)
-    imprimir_escala_por_rayo(resultado, steps, rejected)
+    imprimir_escala_por_rayo(steps, rejected)
 
-    # Esta prueba es la que decide si el agrupamiento por h merece trabajo
-    # adicional: no implementa un solver alternativo; mide el trabajo real que
-    # el algoritmo actual ya realiza. La cantidad de RHS ponderada por cantidad
-    # de rayos es el coste vectorizado que habria que reempaquetar al agrupar.
     total_steps = int(steps.sum())
     print()
     print("DECISION SOBRE AGRUPAMIENTO POR h")
@@ -309,8 +293,6 @@ def main():
 
     resultados = benchmark_hmax(metrica, y0)
 
-    # Seleccion simple: entre configuraciones con la misma fisica, tomar la mas
-    # rapida que no cambie el conjunto de escapes/horizontes de la referencia.
     ref_counts = np.bincount(resultado.status, minlength=6)
     candidates = []
     for h_max, result_i, solver_i, time_i, steps_i, rejected_i in resultados:
