@@ -18,7 +18,7 @@ from Visualizador.RayTracing.background import GridBackground
 from Visualizador.RayTracing.render import RayTracingRenderer
 
 M = 1.0
-R0 = 100.0
+R0 = 50.0
 
 RESOLUCION = (250, 250)
 FOV = 60.0
@@ -30,10 +30,10 @@ H0 = 0.01
 H_MIN = 1e-10
 H_MAX = 0.1
 
-LAMBDA_MAX = 100.0
+LAMBDA_MAX = 1000.0
 
 R_STOP = 2.001
-R_MAX = 20.0
+R_MAX = 100.0    # > R0
 
 BACKGROUND_DISTANCE = 100.0
 BACKGROUND_EXTENT = 60.0
@@ -91,11 +91,15 @@ def main(save=True, show=True):
 
     print(f"tiempo = {tiempo:.3f} s")
 
-    n_escape = np.count_nonzero(resultado.status == 1)
-    n_horizon = np.count_nonzero(resultado.status == 2)
-
-    print(f"escape   = {n_escape}")
-    print(f"horizon  = {n_horizon}")
+    for code, nombre in [
+        (0, "active"),
+        (1, "escape"),
+        (2, "horizon"),
+        (3, "disk"),
+        (4, "max_lambda"),
+        (5, "step_failure"),
+    ]:
+        print(f"{nombre:12s}= {np.count_nonzero(resultado.status == code)}")
 
     background = GridBackground(distance=BACKGROUND_DISTANCE, extent=BACKGROUND_EXTENT, spacing=GRID_SPACING, subgrid=True)
     renderer = RayTracingRenderer(background)
