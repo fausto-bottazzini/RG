@@ -1,76 +1,97 @@
+from pathlib import Path
+import os
+import sys
 import time
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import numpy as np
 
 from Metricas.schwarzschild import Schwarzschild
-
 from Solver.ray_tracing import (
     SolverRayTracing,
+    EscapeEvent,
+    HorizonEvent,
     STATUS_ACTIVE,
     STATUS_ESCAPE,
     STATUS_HORIZON,
+    STATUS_DISK,
     STATUS_MAX_LAMBDA,
-    EscapeEvent,
-    HorizonEvent,
+    STATUS_STEP_FAILURE,
 )
-
 from Tensores.operaciones import tetrada_obs, transformar_vector
 from Visualizador.RayTracing.cam import Camara
 
 
-# ============================================================
-# CONFIGURACIÓN
-# ============================================================
-
+# -----------------------------------------------------------------------------
+# Configuracion del benchmark
+# -----------------------------------------------------------------------------
 M = 1.0
-
-x0 = np.array([
-    0.0,
-    10.0,
-    np.pi / 2,
-    0.0,
-])
-
-RESOLUCION = (100, 100)
+R0 = 100.0
 FOV = 60.0
+RESOLUCION = (64, 64)
 
-RTOL = 1e-9
-ATOL = 1e-11
+R_ESCAPE = R0
+R_STOP = 2.001
+LAMBDA_MAX = 400.0
 
-LAMBDA_MAX = 100.0
-
+RTOL = 1e-7
+ATOL = 1e-9
 H0 = 0.01
 H_MIN = 1e-10
-H_MAX = 0.1
-
-R_STOP = 2.001
-R_MAX = 20.0
+H_MAX_VALUES = (0.05, 0.1, 0.2, 0.5, 1.0, np.inf)
 
 
-# ============================================================
-# CÁMARA
-# ============================================================
+STATUS_NAMES = {
+    STATUS_ACTIVE: "active",
+    STATUS_ESCAPE: "escape",
+    STATUS_HORIZON: "horizon",
+    STATUS_DISK: "disk",
+    STATUS_MAX_LAMBDA: "max_lambda",
+    STATUS_STEP_FAILURE: "step_failure",
+}
 
-def construir_rayones():
 
-    metrica = Schwarzschild(M=M)
+class InstrumentedSolver(SolverRayTracing):
+    """Mide el trabajo batch real sin cambiar el algoritmo del solver."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reset_metrics()
+
+    def reset_metrics(self):
+        self.rhs_calls = 0
+        self.rhs_points = 0
+        self.h_samples = []
+
+    def rhs(self, y):
+        self.rhs_calls += 1
+        self.rhs_points += len(y)
+        return super().rhs(y)
+
+    def _rk45(self, y, h):
+        self.h_samples.append(np.asarray(h, dtype=float).copy())
+        return super()._rk45(y, h)
+
+
+def construir_observador(metrica):
+    x0 = np.array([0.0, R0, np.pi / 2.0, 0.0])
 
     metric_num = metrica.numeric("metric")
     valores = metric_num.evaluar_valores(*x0)
-
-    g0 = np.zeros((4, 4), dtype=float)
-
+    g = np.zeros((4, 4), dtype=float)
     for idx, valor in zip(metric_num.indices, valores):
-        g0[idx] = valor
+        g[idx] = valor
 
     u_obs = np.zeros(4)
-    u_obs[0] = 1.0 / np.sqrt(-g0[0, 0])
+    u_obs[0] = 1.0 / np.sqrt(-g[0, 0])
+    tetrada = tetrada_obs(metrica, x0, u_obs)
+    return x0, tetrada
 
-    e = tetrada_obs(
-        metrica,
-        x0,
-        u_obs,
-    )
 
+def construir_rayos(metrica, x0, tetrada):
     camara = Camara(
         posicion=x0,
         resolucion=RESOLUCION,
@@ -78,613 +99,221 @@ def construir_rayones():
         foward=(-1.0, 0.0, 0.0),
         up=(0.0, 0.0, 1.0),
     )
-
     k_local = camara.rays_local()
+    k = transformar_vector(tetrada, k_local)
 
-    k = transformar_vector(
-        e,
-        k_local,
-    )
-
-    N = len(k)
-
-    y0 = np.empty(
-        (N, 8),
-        dtype=float,
-    )
-
+    y0 = np.empty((len(k), 8), dtype=float)
     y0[:, :4] = x0
     y0[:, 4:] = k
+    return camara, y0
 
-    return metrica, y0
 
+def diagnostico_inicial(metrica, y0):
+    """Comprueba que la camara genera la distribucion de impacto esperada."""
+    x = y0[:, :4]
+    u = y0[:, 4:]
 
-# ============================================================
-# EVENTOS
-# ============================================================
+    metric_num = metrica.numeric("metric")
+    valores = metric_num.evaluar_valores(*x.T)
+    mapa = {idx: np.asarray(v) for idx, v in zip(metric_num.indices, valores)}
 
-def construir_eventos():
+    gtt = mapa[(0, 0)]
+    gphiphi = mapa[(3, 3)]
 
-    return (
-        HorizonEvent(
-            R_STOP,
-            radial_index=1,
-        ),
-        EscapeEvent(
-            R_MAX,
-            radial_index=1,
-        ),
-    )
+    energy = -gtt * u[:, 0]
+    angular = gphiphi * u[:, 3]
+    impact = np.abs(angular / energy)
 
-
-# ============================================================
-# SOLVER INSTRUMENTADO
-# ============================================================
-
-def resolver_instrumentado(
-    solver,
-    y0,
-    eventos,
-):
-    """
-    Replica el solver actual y mide:
-
-      - número de rayos activos por iteración
-      - tiempo por iteración
-      - tiempo acumulado por tamaño de batch
-      - número de llamadas _rk45
-    """
-
-    y = np.asarray(
-        y0,
-        dtype=float,
-    ).copy()
-
-    N = len(y)
-
-    parametro = np.zeros(N)
-
-    h = np.full(
-        N,
-        H0,
-        dtype=float,
-    )
-
-    status = np.full(
-        N,
-        STATUS_ACTIVE,
-        dtype=np.int8,
-    )
-
-    pasos = np.zeros(
-        N,
-        dtype=int,
-    )
-
-    rechazos = np.zeros(
-        N,
-        dtype=int,
-    )
-
-    # --------------------------------------------------------
-    # Instrumentación
-    # --------------------------------------------------------
-
-    activos_hist = []
-    tiempos_iter = []
-
-    llamadas_rk45 = 0
-
-    inicio_total = time.perf_counter()
-
-    # --------------------------------------------------------
-    # Integración
-    # --------------------------------------------------------
-
-    for _ in range(1_000_000):
-
-        inicio_iter = time.perf_counter()
-
-        activos = status == STATUS_ACTIVE
-
-        if not np.any(activos):
-            break
-
-        indices = np.flatnonzero(
-            activos
-        )
-
-        n_activos = len(indices)
-
-        activos_hist.append(
-            n_activos
-        )
-
-        y_act = y[indices]
-        h_act = h[indices]
-
-        restante = (
-            LAMBDA_MAX
-            - parametro[indices]
-        )
-
-        h_act = np.minimum(
-            h_act,
-            restante,
-        )
-
-        y_new, error = solver._rk45(
-            y_act,
-            h_act,
-        )
-
-        llamadas_rk45 += 1
-
-        aceptado = error <= 1.0
-
-        # ----------------------------------------------------
-        # RECHAZADOS
-        # ----------------------------------------------------
-
-        if np.any(~aceptado):
-
-            idx = indices[~aceptado]
-
-            factor = solver._factor_paso(
-                error[~aceptado],
-                np.zeros(
-                    np.sum(~aceptado),
-                    dtype=bool,
-                ),
-            )
-
-            h[idx] *= factor
-
-            h[idx] = np.maximum(
-                h[idx],
-                H_MIN,
-            )
-
-            rechazos[idx] += 1
-
-        # ----------------------------------------------------
-        # ACEPTADOS
-        # ----------------------------------------------------
-
-        if np.any(aceptado):
-
-            local = indices[aceptado]
-
-            y_prev = y_act[aceptado]
-            y_next = y_new[aceptado]
-
-            h_next = h_act[aceptado]
-            error_next = error[aceptado]
-
-            evento_alpha = np.full(
-                len(local),
-                np.inf,
-                dtype=float,
-            )
-
-            evento_code = np.full(
-                len(local),
-                -1,
-                dtype=np.int8,
-            )
-
-            for evento in eventos:
-
-                detectado, alpha = evento.detect(
-                    y_prev,
-                    y_next,
-                )
-
-                tomar = (
-                    detectado
-                    & (alpha < evento_alpha)
-                )
-
-                evento_alpha[tomar] = alpha[tomar]
-                evento_code[tomar] = evento.code
-
-            ocurrio = np.isfinite(
-                evento_alpha
-            )
-
-            normales = ~ocurrio
-
-            # -----------------------------------------------
-            # NORMALES
-            # -----------------------------------------------
-
-            if np.any(normales):
-
-                idx = local[normales]
-
-                y[idx] = y_next[normales]
-
-                parametro[idx] += (
-                    h_next[normales]
-                )
-
-                pasos[idx] += 1
-
-            # -----------------------------------------------
-            # EVENTOS
-            # -----------------------------------------------
-
-            if np.any(ocurrio):
-
-                idx = local[ocurrio]
-
-                alpha = evento_alpha[
-                    ocurrio
-                ]
-
-                y_hit = (
-                    y_prev[ocurrio]
-                    + alpha[:, None]
-                    * (
-                        y_next[ocurrio]
-                        - y_prev[ocurrio]
-                    )
-                )
-
-                y[idx] = y_hit
-
-                parametro[idx] += (
-                    alpha
-                    * h_next[ocurrio]
-                )
-
-                status[idx] = (
-                    evento_code[
-                        ocurrio
-                    ]
-                )
-
-                pasos[idx] += 1
-
-            # -----------------------------------------------
-            # ADAPTACIÓN DE h
-            # -----------------------------------------------
-
-            if np.any(normales):
-
-                factor = solver._factor_paso(
-                    error_next[normales],
-                    np.ones(
-                        np.sum(normales),
-                        dtype=bool,
-                    ),
-                )
-
-                idx = local[normales]
-
-                h[idx] *= factor
-
-                h[idx] = np.clip(
-                    h[idx],
-                    H_MIN,
-                    H_MAX,
-                )
-
-            # -----------------------------------------------
-            # LAMBDA MAX
-            # -----------------------------------------------
-
-            llego = (
-                normales
-                & (
-                    parametro[local]
-                    >= (
-                        LAMBDA_MAX
-                        - np.finfo(float).eps
-                    )
-                )
-            )
-
-            if np.any(llego):
-
-                status[
-                    local[llego]
-                ] = STATUS_MAX_LAMBDA
-
-        tiempos_iter.append(
-            time.perf_counter()
-            - inicio_iter
-        )
-
-    tiempo_total = (
-        time.perf_counter()
-        - inicio_total
-    )
-
-    return {
-        "status": status,
-        "pasos": pasos,
-        "rechazos": rechazos,
-        "tiempo": tiempo_total,
-        "activos": np.asarray(
-            activos_hist,
-            dtype=int,
-        ),
-        "tiempos_iter": np.asarray(
-            tiempos_iter,
-            dtype=float,
-        ),
-        "llamadas_rk45": llamadas_rk45,
-    }
-
-
-# ============================================================
-# ANÁLISIS POR TAMAÑO DE BATCH
-# ============================================================
-
-def analizar_rangos(
-    activos,
-    tiempos,
-):
-    """
-    Agrupa las iteraciones según cantidad de rayos activos.
-    """
-
-    rangos = (
-        ("10000-5001", 5001, np.inf),
-        ("5000-2001", 2001, 5000),
-        ("2000-1001", 1001, 2000),
-        ("1000-501", 501, 1000),
-        ("500-101", 101, 500),
-        ("100-51", 51, 100),
-        ("50-11", 11, 50),
-        ("10-1", 1, 10),
-    )
+    bc = 3.0 * np.sqrt(3.0) * M
+    falling = impact < bc
 
     print()
-    print("=" * 90)
-    print("COSTO SEGÚN CANTIDAD DE RAYOS ACTIVOS")
-    print("=" * 90)
+    print("DIAGNOSTICO DE LA CAMARA")
+    print("-" * 80)
+    print(f"b_critico          = {bc:.6f}")
+    print(f"b min / max        = {impact.min():.6f} / {impact.max():.6f}")
+    print(f"b mediana          = {np.median(impact):.6f}")
+    print(f"rayos b < b_critico = {falling.sum()} / {len(impact)} ({100.0 * falling.mean():.2f} %)")
 
-    print(
-        f"{'rango':>14} "
-        f"{'iteraciones':>14} "
-        f"{'tiempo [s]':>14} "
-        f"{'% tiempo':>12} "
-        f"{'rayos prom.':>14} "
-        f"{'us/iter':>14}"
-    )
-
-    print("-" * 90)
-
-    total = tiempos.sum()
-
-    for nombre, minimo, maximo in rangos:
-
-        mask = (
-            (activos >= minimo)
-            & (activos <= maximo)
-        )
-
-        if not np.any(mask):
-            continue
-
-        t = tiempos[mask].sum()
-        n = np.count_nonzero(mask)
-
-        promedio_activos = activos[
-            mask
-        ].mean()
-
-        us_iter = (
-            t / n * 1e6
-        )
-
-        print(
-            f"{nombre:>14} "
-            f"{n:14d} "
-            f"{t:14.6f} "
-            f"{100.0 * t / total:12.3f} "
-            f"{promedio_activos:14.2f} "
-            f"{us_iter:14.3f}"
-        )
+    if np.all(impact < bc):
+        print("ADVERTENCIA: toda la camara cae dentro del cono critico.")
+    elif np.all(impact > bc):
+        print("ADVERTENCIA: ningun rayo entra en el cono critico.")
+    else:
+        print("OK: la camara contiene rayos que caen y rayos que escapan.")
 
 
-# ============================================================
-# ESTADÍSTICAS ÚTILES
-# ============================================================
-
-def imprimir_estadisticas(
-    resultado,
-):
-
-    activos = resultado["activos"]
-    tiempos = resultado["tiempos_iter"]
-
-    print()
-    print("=" * 90)
-    print("ESTADÍSTICAS DE BATCH")
-    print("=" * 90)
-
-    print(
-        f"iteraciones totales     = "
-        f"{len(activos)}"
-    )
-
-    print(
-        f"rayos activos iniciales = "
-        f"{activos[0]}"
-    )
-
-    print(
-        f"rayos activos finales   = "
-        f"{activos[-1]}"
-    )
-
-    print(
-        f"batch medio             = "
-        f"{activos.mean():.2f}"
-    )
-
-    print(
-        f"batch mediano           = "
-        f"{np.median(activos):.2f}"
-    )
-
-    print(
-        f"batch mínimo            = "
-        f"{activos.min()}"
-    )
-
-    print(
-        f"batch máximo            = "
-        f"{activos.max()}"
-    )
-
-    # Tiempo por iteración
-
-    print()
-    print("TIEMPO POR ITERACIÓN")
-    print("-" * 60)
-
-    print(
-        f"mínimo   = "
-        f"{tiempos.min() * 1e6:.3f} us"
-    )
-
-    print(
-        f"mediana  = "
-        f"{np.median(tiempos) * 1e6:.3f} us"
-    )
-
-    print(
-        f"máximo   = "
-        f"{tiempos.max() * 1e6:.3f} us"
-    )
-
-    # Últimas etapas
-
-    print()
-    print("ÚLTIMAS ITERACIONES")
-    print("-" * 60)
-
-    n = min(
-        20,
-        len(activos),
-    )
-
-    for i in range(
-        len(activos) - n,
-        len(activos),
-    ):
-
-        print(
-            f"iter {i:4d} : "
-            f"{activos[i]:5d} rayos   "
-            f"{tiempos[i] * 1e6:10.3f} us"
-        )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print("=" * 90)
-    print("BENCHMARK — COSTO DE LOS BATCHES PEQUEÑOS")
-    print("=" * 90)
-
-    metrica, y0 = construir_rayones()
-
-    eventos = construir_eventos()
-
-    solver = SolverRayTracing(
-        metrica,
-        rtol=RTOL,
-        atol=ATOL,
-    )
-
-    resultado = resolver_instrumentado(
-        solver,
-        y0,
-        eventos,
-    )
-
-    N = len(y0)
-
-    print()
-    print("RESULTADO")
-    print("-" * 90)
-
-    print(
-        f"rayos               = {N}"
-    )
-
-    print(
-        f"tiempo total        = "
-        f"{resultado['tiempo']:.6f} s"
-    )
-
-    print(
-        f"us/rayo             = "
-        f"{resultado['tiempo'] / N * 1e6:.3f}"
-    )
-
-    print(
-        f"llamadas _rk45      = "
-        f"{resultado['llamadas_rk45']}"
-    )
-
-    print(
-        f"pasos promedio      = "
-        f"{resultado['pasos'].mean():.3f}"
-    )
-
-    print(
-        f"rechazos totales    = "
-        f"{resultado['rechazos'].sum()}"
-    )
-
-    # --------------------------------------------------------
-    # Estados
-    # --------------------------------------------------------
-
+def imprimir_estados(status):
     print()
     print("ESTADOS")
-    print("-" * 60)
+    print("-" * 80)
+    for code in range(6):
+        n = np.count_nonzero(status == code)
+        print(f"{STATUS_NAMES[code]:12s}= {n}")
 
-    for codigo, nombre in (
-        (STATUS_ESCAPE, "ESCAPE"),
-        (STATUS_HORIZON, "HORIZON"),
-        (STATUS_MAX_LAMBDA, "MAX_LAMBDA"),
-    ):
 
-        n = np.count_nonzero(
-            resultado["status"] == codigo
-        )
+def imprimir_trabajo(solver):
+    h = np.concatenate(solver.h_samples) if solver.h_samples else np.empty(0)
+    print()
+    print("TRABAJO REAL DEL BATCH")
+    print("-" * 80)
+    print(f"RHS calls          = {solver.rhs_calls}")
+    print(f"puntos procesados  = {solver.rhs_points:,}")
 
-        if n == 0:
-            continue
+    if h.size == 0:
+        return
 
+    q = np.percentile(h, [0, 1, 5, 25, 50, 75, 95, 99, 100])
+    print("h usado en RK45")
+    print(f"min/1%/5%          = {q[0]:.3e} / {q[1]:.3e} / {q[2]:.3e}")
+    print(f"25/50/75%          = {q[3]:.3e} / {q[4]:.3e} / {q[5]:.3e}")
+    print(f"95/99%/max         = {q[6]:.3e} / {q[7]:.3e} / {q[8]:.3e}")
+
+
+def run_case(metrica, y0, h_max, *, lambda_max=LAMBDA_MAX, r_escape=None):
+    if r_escape is None:
+        r_escape = R0
+
+    solver = InstrumentedSolver(metrica, rtol=RTOL, atol=ATOL)
+    eventos = (
+        HorizonEvent(R_STOP, radial_index=1),
+        EscapeEvent(r_escape, radial_index=1),
+    )
+
+    inicio = time.perf_counter()
+    resultado = solver.resolver(
+        y0,
+        lambda_max=lambda_max,
+        h0=H0,
+        h_min=H_MIN,
+        h_max=h_max,
+        eventos=eventos,
+    )
+    elapsed = time.perf_counter() - inicio
+
+    steps = resultado.pasos_aceptados
+    rejected = resultado.pasos_rechazados
+
+    return resultado, solver, elapsed, steps, rejected
+
+
+def imprimir_escala_por_rayo(steps, rejected):
+    print()
+    print("PASOS POR RAYO")
+    print("-" * 80)
+    q_steps = np.percentile(steps, [0, 25, 50, 75, 95, 99, 100])
+    q_rej = np.percentile(rejected, [0, 50, 95, 99, 100])
+    print(
+        "aceptados  min/25/50/75/95/99/max = "
+        + " / ".join(f"{x:.0f}" for x in q_steps)
+    )
+    print(
+        "rechazados min/50/95/99/max          = "
+        + " / ".join(f"{x:.0f}" for x in q_rej)
+    )
+    print(f"aceptados totales                   = {steps.sum():,}")
+    print(f"rechazados totales                  = {rejected.sum():,}")
+
+
+def benchmark_hmax(metrica, y0):
+    print()
+    print("BENCHMARK h_max")
+    print("=" * 80)
+    print(
+        f"resolucion={RESOLUCION}, FOV={FOV} deg, r0={R0}, "
+        f"lambda_max={LAMBDA_MAX}, r_escape={R0}"
+    )
+    print(
+        f"rtol={RTOL:.1e}, atol={ATOL:.1e}, h0={H0}, h_min={H_MIN}"
+    )
+    print()
+    print(
+        f"{'h_max':>10s} {'tiempo[s]':>12s} {'escape':>10s} "
+        f"{'horizon':>10s} {'maxlam':>10s} {'pasos':>14s} {'rechazos':>14s}"
+    )
+    print("-" * 94)
+
+    resultados = []
+    for h_max in H_MAX_VALUES:
+        resultado, solver, elapsed, steps, rejected = run_case(metrica, y0, h_max)
+        counts = [np.count_nonzero(resultado.status == c) for c in range(6)]
         print(
-            f"{nombre:>12}: "
-            f"{n:6d} "
-            f"({100.0 * n / N:7.3f} %)"
+            f"{str(h_max):>10s} {elapsed:12.3f} {counts[STATUS_ESCAPE]:10d} "
+            f"{counts[STATUS_HORIZON]:10d} {counts[STATUS_MAX_LAMBDA]:10d} "
+            f"{steps.sum():14,d} {rejected.sum():14,d}"
         )
+        resultados.append((h_max, resultado, solver, elapsed, steps, rejected))
 
-    # --------------------------------------------------------
-    # Estadísticas
-    # --------------------------------------------------------
+    return resultados
 
-    imprimir_estadisticas(
-        resultado
+
+def main():
+    global RESOLUCION, FOV, R0
+
+    size = int(os.environ.get("RT_TEST_SIZE", RESOLUCION[0]))
+    RESOLUCION = (size, size)
+    FOV = float(os.environ.get("RT_TEST_FOV", FOV))
+    R0 = float(os.environ.get("RT_TEST_R0", R0))
+
+    metrica = Schwarzschild(M=M)
+    x0, tetrada = construir_observador(metrica)
+    _, y0 = construir_rayos(metrica, x0, tetrada)
+
+    print("=" * 80)
+    print("SCHWARZSCHILD — RAY TRACING DIAGNOSTIC / PERFORMANCE TEST")
+    print("=" * 80)
+    print(f"resolution = {RESOLUCION}")
+    print(f"FOV        = {FOV} deg")
+    print(f"r0         = {R0}")
+    print(f"r_stop     = {R_STOP}")
+    print(f"r_escape   = {R0}")
+    print(f"lambda_max = {LAMBDA_MAX}")
+
+    diagnostico_inicial(metrica, y0)
+
+    print()
+    print("CORRIDA DE REFERENCIA")
+    print("=" * 80)
+    resultado, solver, elapsed, steps, rejected = run_case(metrica, y0, 0.1)
+    print(f"tiempo = {elapsed:.3f} s")
+    imprimir_estados(resultado.status)
+    imprimir_trabajo(solver)
+    imprimir_escala_por_rayo(steps, rejected)
+
+    total_steps = int(steps.sum())
+    print()
+    print("DECISION SOBRE AGRUPAMIENTO POR h")
+    print("-" * 80)
+    print(f"pasos por rayo totales               = {total_steps:,}")
+    print(f"evaluaciones RHS teoricas (x7)       = {7 * total_steps:,}")
+    print(
+        "El agrupamiento solo puede mejorar si reduce costes de memoria/allocation "
+        "o permite kernels con paso fijo; no reduce automaticamente estas etapas RK45."
     )
 
-    analizar_rangos(
-        resultado["activos"],
-        resultado["tiempos_iter"],
-    )
+    resultados = benchmark_hmax(metrica, y0)
+
+    ref_counts = np.bincount(resultado.status, minlength=6)
+    candidates = []
+    for h_max, result_i, solver_i, time_i, steps_i, rejected_i in resultados:
+        counts_i = np.bincount(result_i.status, minlength=6)
+        same_physics = (
+            counts_i[STATUS_ESCAPE] == ref_counts[STATUS_ESCAPE]
+            and counts_i[STATUS_HORIZON] == ref_counts[STATUS_HORIZON]
+        )
+        if same_physics:
+            candidates.append((time_i, h_max))
+
+    print()
+    print("CONCLUSION AUTOMATICA DEL SWEEP")
+    print("-" * 80)
+    if candidates:
+        best_time, best_h = min(candidates)
+        print(f"mejor h_max dentro del sweep = {best_h}")
+        print(f"tiempo                         = {best_time:.3f} s")
+    else:
+        print("Ningun h_max del sweep reprodujo exactamente los conteos de la referencia.")
+        print("Eso indica que hay que controlar primero la fisica/tolerancia antes de optimizar.")
 
 
 if __name__ == "__main__":

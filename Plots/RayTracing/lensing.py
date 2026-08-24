@@ -63,7 +63,7 @@ def construir_rayos(metrica, x0, tetrada):
     y0[:, 4:] = k
     return camara, y0
 
-def main(save=True, show=True):
+def main(save=False, show=True):
     print("=" * 80)
     print("SCHWARZSCHILD — GRAVITATIONAL LENSING")
     print("=" * 80)
