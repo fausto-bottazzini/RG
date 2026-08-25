@@ -112,7 +112,7 @@ class DiskEvent(SurfaceEvent):
 
 class SolverRayTracing:
     """Integrador batch para geodésicas nulas."""
-    def __init__(self, metrica, *, rtol=1e-7, atol=1e-9, safety=0.9, min_factor=0.2, max_factor=5.0, batch_max=8192): 
+    def __init__(self, metrica, *, rtol=1e-7, atol=1e-9, safety=0.9, min_factor=0.2, max_factor=5.0, batch_max=3950): 
         self.evaluator = GeodesicaEvaluator(metrica)
         self.dim = self.evaluator.dim
         self.rtol = float(rtol)
@@ -328,12 +328,14 @@ class SolverRayTracing:
             raise ValueError(f"y0 debe tener {2 * self.dim} columnas.")
 
         N = len(y)
-        eventos = tuple(eventos) 
+        eventos = tuple(eventos)
+
         if lambda_max is None:
             lambda_max = self._lambda_max_auto(y, eventos)
+
         estado = np.empty_like(y0)
         status = np.full(N, STATUS_ACTIVE, dtype=np.int8)
-        parametro = np.zeros(N, dtype=float) 
+        parametro = np.zeros(N, dtype=float)
         pasos_aceptados = np.zeros(N, dtype=int)
         pasos_rechazados = np.zeros(N, dtype=int)
 
@@ -354,13 +356,14 @@ class SolverRayTracing:
             if n_active == 0:
                 break
 
-            # reporte de avance 
+            # reporte de avance
             if progress:
                 ahora = time.perf_counter()
                 if ahora - ultimo_reporte >= progress_interval:
                     terminados = N - n_active
                     fraccion = terminados / N
                     elapsed = ahora - inicio
+
                     if terminados > 0:
                         eta = elapsed * (1.0 - fraccion) / fraccion
                         eta_txt = f"ETA~ {eta:7.1f} s"
@@ -389,15 +392,17 @@ class SolverRayTracing:
 
             for inicio_batch in range(0, n_active, batch_max):
                 fin_batch = min(inicio_batch + batch_max, n_active)
-                n_batch = (fin_batch - inicio_batch)
+                n_batch = fin_batch - inicio_batch
+
                 y_batch = y_active[inicio_batch:fin_batch]
                 h_batch = h_active[inicio_batch:fin_batch]
                 parametro_batch = parametro_active[inicio_batch:fin_batch]
                 ids_batch = ids_active[inicio_batch:fin_batch]
+
                 finished_batch = np.zeros(n_batch, dtype=bool)
 
                 h_trial = b["h_trial"][:n_batch]
-            
+
                 restante = lambda_max - parametro_batch
                 np.minimum(h_batch, restante, out=h_trial)
 
@@ -411,6 +416,7 @@ class SolverRayTracing:
 
                 if np.any(rejected):
                     rej_idx = np.flatnonzero(rejected)
+
                     factor = self._factor_paso(error[rej_idx], np.zeros(len(rej_idx), dtype=bool), out=b["factor"][:len(rej_idx)])
                     h_nuevo = h_batch[rej_idx] * factor
                     fallo = h_nuevo < h_min
@@ -421,12 +427,13 @@ class SolverRayTracing:
 
                         status[fallo_ids] = STATUS_STEP_FAILURE
                         estado[fallo_ids] = y_batch[fallo_idx]
-                        parametro[fallo_ids] = parametro_active[fallo_idx]
+                        parametro[fallo_ids] = parametro_batch[fallo_idx]
                         pasos_rechazados[fallo_ids] += 1
                         finished_batch[fallo_idx] = True
 
                     if np.any(~fallo):
                         valid_idx = rej_idx[~fallo]
+
                         h_batch[valid_idx] = h_nuevo[~fallo]
                         pasos_rechazados[ids_batch[valid_idx]] += 1
 
@@ -438,6 +445,7 @@ class SolverRayTracing:
                     y_next = y_new[acc_idx]
                     h_acc = h_trial[acc_idx]
                     error_acc = error[acc_idx]
+
                     pasos_aceptados[ids_acc] += 1
 
                     evento_alpha = np.full(len(acc_idx), np.inf, dtype=float)
@@ -453,34 +461,43 @@ class SolverRayTracing:
                     ocurrio_evento = np.isfinite(evento_alpha)
 
                     normales = ~ocurrio_evento
+
                     if np.any(normales):
                         normal_idx = acc_idx[normales]
-                        y_batch[normal_idx] = y_next[normales] 
-                        parametro_active[normal_idx] += (h_acc[normales])
+
+                        y_batch[normal_idx] = y_next[normales]
+                        parametro_batch[normal_idx] += (h_acc[normales])
                         factor = self._factor_paso(error_acc[normales], np.ones(np.sum(normales), dtype=bool), out=b["factor"][:np.sum(normales)])
-                        h_active[normal_idx] *= factor
-                        h_active[normal_idx] = np.clip(h_active[normal_idx], h_min, h_max) 
+                        h_batch[normal_idx] *= factor
+                        h_batch[normal_idx] = np.clip( h_batch[normal_idx], h_min, h_max)
 
                     if np.any(ocurrio_evento):
                         event_local = acc_idx[ocurrio_evento]
                         event_ids = ids_acc[ocurrio_evento]
-                        alpha_event = (evento_alpha[ocurrio_evento])
+                        alpha_event = evento_alpha[ocurrio_evento]
+
                         y_hit = (y_prev[ocurrio_evento] + alpha_event[:, None] * (y_next[ocurrio_evento] - y_prev[ocurrio_evento]))
-                        parametro_event = (parametro_active[event_local] + alpha_event * h_acc[ocurrio_evento])
+                        parametro_event = (parametro_batch[event_local] + alpha_event * h_acc[ocurrio_evento])
+
                         estado[event_ids] = y_hit
                         parametro[event_ids] = parametro_event
                         status[event_ids] = evento_code[ocurrio_evento]
+
                         finished_batch[event_local] = True
 
                     if np.any(normales):
                         normal_idx = acc_idx[normales]
-                        llego = (parametro_active[normal_idx] >= lambda_max - EPS)
+
+                        llego = (parametro_batch[normal_idx] >= lambda_max - EPS)
+
                         if np.any(llego):
                             lambda_idx = normal_idx[llego]
-                            lambda_ids = (ids_batch[lambda_idx])
+                            lambda_ids = ids_batch[lambda_idx]
+
                             estado[lambda_ids] = y_batch[lambda_idx]
-                            parametro[lambda_ids] = parametro_active[lambda_idx]
+                            parametro[lambda_ids] = parametro_batch[lambda_idx]
                             status[lambda_ids] = STATUS_MAX_LAMBDA
+
                             finished_batch[lambda_idx] = True
 
                 finished[inicio_batch:fin_batch] = finished_batch
@@ -493,6 +510,7 @@ class SolverRayTracing:
                 h_active[:new_n] = h_active[keep_idx]
                 parametro_active[:new_n] = parametro_active[keep_idx]
                 ids_active[:new_n] = ids_active[keep_idx]
+
                 n_active = new_n
 
         if n_active > 0:
@@ -501,7 +519,8 @@ class SolverRayTracing:
             parametro[ids_remaining] = parametro_active[:n_active]
 
         if progress:
-            elapsed = (time.perf_counter() - inicio)
+            elapsed = time.perf_counter() - inicio
+
             if n_active == 0:
                 print(
                     f"\rIntegrando ["
@@ -515,7 +534,8 @@ class SolverRayTracing:
                 )
             else:
                 terminados = N - n_active
-                porcentaje = (100.0 * terminados / N)
+                porcentaje = 100.0 * terminados / N
+
                 print(
                     f"\rIntegración detenida | "
                     f"{porcentaje:6.2f}% | "
@@ -531,5 +551,4 @@ class SolverRayTracing:
             parametro=parametro,
             pasos_aceptados=pasos_aceptados,
             pasos_rechazados=pasos_rechazados,
-        )   
-
+        )

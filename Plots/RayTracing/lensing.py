@@ -20,7 +20,7 @@ from Visualizador.RayTracing.render import RayTracingRenderer
 M = 1.0
 R0 = 50.0
 
-RESOLUCION = (250, 250)
+RESOLUCION = (1920, 1920)
 FOV = 60.0
 
 RTOL = 1e-9
@@ -123,4 +123,4 @@ def main(save=False, show=True):
     return image, resultado
 
 if __name__ == "__main__":
-    main()
+    main(save=False)
