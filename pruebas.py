@@ -3,95 +3,142 @@ import os
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[2]
+import numpy as np
+
+ROOT = Path(__file__).resolve().parent
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import numpy as np
-
 from Metricas.schwarzschild import Schwarzschild
+
 from Solver.ray_tracing import (
     SolverRayTracing,
     EscapeEvent,
     HorizonEvent,
-    STATUS_ACTIVE,
     STATUS_ESCAPE,
     STATUS_HORIZON,
-    STATUS_DISK,
     STATUS_MAX_LAMBDA,
     STATUS_STEP_FAILURE,
 )
-from Tensores.operaciones import tetrada_obs, transformar_vector
+
+from Tensores.operaciones import (
+    tetrada_obs,
+    transformar_vector,
+)
+
 from Visualizador.RayTracing.cam import Camara
 
 
-# -----------------------------------------------------------------------------
-# Configuracion del benchmark
-# -----------------------------------------------------------------------------
-M = 1.0
-R0 = 100.0
-FOV = 60.0
-RESOLUCION = (64, 64)
+# =============================================================================
+# CONFIGURACIÓN
+# =============================================================================
 
-R_ESCAPE = R0
+M = 1.0
+
+SIZE = int(
+    os.environ.get(
+        "RT_TEST_SIZE",
+        250,
+    )
+)
+
+RESOLUCION = (
+    SIZE,
+    SIZE,
+)
+
+FOV = float(
+    os.environ.get(
+        "RT_TEST_FOV",
+        60.0,
+    )
+)
+
+R0 = float(
+    os.environ.get(
+        "RT_TEST_R0",
+        50.0,
+    )
+)
+
 R_STOP = 2.001
-LAMBDA_MAX = 400.0
+R_ESCAPE = R0
 
 RTOL = 1e-7
 ATOL = 1e-9
+
 H0 = 0.01
 H_MIN = 1e-10
-H_MAX_VALUES = (0.05, 0.1, 0.2, 0.5, 1.0, np.inf)
+H_MAX = 0.1
+
+LAMBDA_FACTOR = 10.0
+
+# Tamaño máximo de bloque.
+# None = todos los rayos juntos.
+BLOQUES = (
+    None,
+    32768,
+    16384,
+    8192,
+    4096,
+    2048,
+    1024,
+)
 
 
-STATUS_NAMES = {
-    STATUS_ACTIVE: "active",
-    STATUS_ESCAPE: "escape",
-    STATUS_HORIZON: "horizon",
-    STATUS_DISK: "disk",
-    STATUS_MAX_LAMBDA: "max_lambda",
-    STATUS_STEP_FAILURE: "step_failure",
-}
-
-
-class InstrumentedSolver(SolverRayTracing):
-    """Mide el trabajo batch real sin cambiar el algoritmo del solver."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.reset_metrics()
-
-    def reset_metrics(self):
-        self.rhs_calls = 0
-        self.rhs_points = 0
-        self.h_samples = []
-
-    def rhs(self, y):
-        self.rhs_calls += 1
-        self.rhs_points += len(y)
-        return super().rhs(y)
-
-    def _rk45(self, y, h):
-        self.h_samples.append(np.asarray(h, dtype=float).copy())
-        return super()._rk45(y, h)
-
+# =============================================================================
+# CÁMARA
+# =============================================================================
 
 def construir_observador(metrica):
-    x0 = np.array([0.0, R0, np.pi / 2.0, 0.0])
+
+    x0 = np.array(
+        [
+            0.0,
+            R0,
+            np.pi / 2.0,
+            0.0,
+        ]
+    )
 
     metric_num = metrica.numeric("metric")
     valores = metric_num.evaluar_valores(*x0)
-    g = np.zeros((4, 4), dtype=float)
-    for idx, valor in zip(metric_num.indices, valores):
+
+    g = np.zeros(
+        (4, 4),
+        dtype=float,
+    )
+
+    for idx, valor in zip(
+        metric_num.indices,
+        valores,
+    ):
         g[idx] = valor
 
-    u_obs = np.zeros(4)
-    u_obs[0] = 1.0 / np.sqrt(-g[0, 0])
-    tetrada = tetrada_obs(metrica, x0, u_obs)
+    u_obs = np.zeros(
+        4,
+        dtype=float,
+    )
+
+    u_obs[0] = (
+        1.0 / np.sqrt(-g[0, 0])
+    )
+
+    tetrada = tetrada_obs(
+        metrica,
+        x0,
+        u_obs,
+    )
+
     return x0, tetrada
 
 
-def construir_rayos(metrica, x0, tetrada):
+def construir_rayos(
+    x0,
+    tetrada,
+):
+
     camara = Camara(
         posicion=x0,
         resolucion=RESOLUCION,
@@ -99,221 +146,633 @@ def construir_rayos(metrica, x0, tetrada):
         foward=(-1.0, 0.0, 0.0),
         up=(0.0, 0.0, 1.0),
     )
-    k_local = camara.rays_local()
-    k = transformar_vector(tetrada, k_local)
 
-    y0 = np.empty((len(k), 8), dtype=float)
+    k_local = camara.rays_local()
+    k = transformar_vector(
+        tetrada,
+        k_local,
+    )
+
+    y0 = np.empty(
+        (len(k), 8),
+        dtype=float,
+    )
+
     y0[:, :4] = x0
     y0[:, 4:] = k
+
     return camara, y0
 
 
-def diagnostico_inicial(metrica, y0):
-    """Comprueba que la camara genera la distribucion de impacto esperada."""
+# =============================================================================
+# DIAGNÓSTICO DE CÁMARA
+# =============================================================================
+
+def diagnostico_camara(
+    metrica,
+    y0,
+):
+
     x = y0[:, :4]
     u = y0[:, 4:]
 
     metric_num = metrica.numeric("metric")
-    valores = metric_num.evaluar_valores(*x.T)
-    mapa = {idx: np.asarray(v) for idx, v in zip(metric_num.indices, valores)}
+
+    valores = metric_num.evaluar_valores(
+        *x.T
+    )
+
+    mapa = {
+        idx: np.asarray(valor)
+        for idx, valor in zip(
+            metric_num.indices,
+            valores,
+        )
+    }
 
     gtt = mapa[(0, 0)]
     gphiphi = mapa[(3, 3)]
 
     energy = -gtt * u[:, 0]
     angular = gphiphi * u[:, 3]
-    impact = np.abs(angular / energy)
 
-    bc = 3.0 * np.sqrt(3.0) * M
-    falling = impact < bc
+    impact = np.abs(
+        angular / energy
+    )
+
+    b_critico = (
+        3.0
+        * np.sqrt(3.0)
+        * M
+    )
+
+    falling = impact < b_critico
 
     print()
-    print("DIAGNOSTICO DE LA CAMARA")
-    print("-" * 80)
-    print(f"b_critico          = {bc:.6f}")
-    print(f"b min / max        = {impact.min():.6f} / {impact.max():.6f}")
-    print(f"b mediana          = {np.median(impact):.6f}")
-    print(f"rayos b < b_critico = {falling.sum()} / {len(impact)} ({100.0 * falling.mean():.2f} %)")
+    print("=" * 90)
+    print("DIAGNÓSTICO DE LA CÁMARA")
+    print("=" * 90)
 
-    if np.all(impact < bc):
-        print("ADVERTENCIA: toda la camara cae dentro del cono critico.")
-    elif np.all(impact > bc):
-        print("ADVERTENCIA: ningun rayo entra en el cono critico.")
-    else:
-        print("OK: la camara contiene rayos que caen y rayos que escapan.")
+    print(
+        f"rayos                  = "
+        f"{len(y0):,}"
+    )
 
+    print(
+        f"b crítico              = "
+        f"{b_critico:.8f}"
+    )
 
-def imprimir_estados(status):
-    print()
-    print("ESTADOS")
-    print("-" * 80)
-    for code in range(6):
-        n = np.count_nonzero(status == code)
-        print(f"{STATUS_NAMES[code]:12s}= {n}")
+    print(
+        f"b min / mediana / max  = "
+        f"{impact.min():.8f} / "
+        f"{np.median(impact):.8f} / "
+        f"{impact.max():.8f}"
+    )
 
-
-def imprimir_trabajo(solver):
-    h = np.concatenate(solver.h_samples) if solver.h_samples else np.empty(0)
-    print()
-    print("TRABAJO REAL DEL BATCH")
-    print("-" * 80)
-    print(f"RHS calls          = {solver.rhs_calls}")
-    print(f"puntos procesados  = {solver.rhs_points:,}")
-
-    if h.size == 0:
-        return
-
-    q = np.percentile(h, [0, 1, 5, 25, 50, 75, 95, 99, 100])
-    print("h usado en RK45")
-    print(f"min/1%/5%          = {q[0]:.3e} / {q[1]:.3e} / {q[2]:.3e}")
-    print(f"25/50/75%          = {q[3]:.3e} / {q[4]:.3e} / {q[5]:.3e}")
-    print(f"95/99%/max         = {q[6]:.3e} / {q[7]:.3e} / {q[8]:.3e}")
+    print(
+        f"b < b crítico          = "
+        f"{falling.sum():,}"
+        f" ({100.0 * falling.mean():.2f} %)"
+    )
 
 
-def run_case(metrica, y0, h_max, *, lambda_max=LAMBDA_MAX, r_escape=None):
-    if r_escape is None:
-        r_escape = R0
+# =============================================================================
+# EVENTOS
+# =============================================================================
 
-    solver = InstrumentedSolver(metrica, rtol=RTOL, atol=ATOL)
-    eventos = (
-        HorizonEvent(R_STOP, radial_index=1),
-        EscapeEvent(r_escape, radial_index=1),
+def construir_eventos():
+
+    return (
+        HorizonEvent(
+            R_STOP,
+            radial_index=1,
+        ),
+        EscapeEvent(
+            R_ESCAPE,
+            radial_index=1,
+        ),
+    )
+
+
+# =============================================================================
+# UNA CORRIDA COMPLETA
+# =============================================================================
+
+def resolver_completo(
+    solver,
+    y0,
+    eventos,
+):
+
+    inicio = time.perf_counter()
+
+    resultado = solver.resolver(
+        y0,
+        lambda_max=None,
+        h0=H0,
+        h_min=H_MIN,
+        h_max=H_MAX,
+        eventos=eventos,
+        progress=False,
+    )
+
+    elapsed = (
+        time.perf_counter()
+        - inicio
+    )
+
+    return resultado, elapsed
+
+
+# =============================================================================
+# RESOLVER POR BLOQUES
+# =============================================================================
+
+def resolver_bloques(
+    solver,
+    y0,
+    eventos,
+    bloque,
+):
+
+    N = len(y0)
+
+    estado = np.empty_like(y0)
+    status = np.empty(
+        N,
+        dtype=np.int8,
+    )
+    parametro = np.empty(
+        N,
+        dtype=float,
+    )
+
+    pasos_aceptados = np.empty(
+        N,
+        dtype=int,
+    )
+
+    pasos_rechazados = np.empty(
+        N,
+        dtype=int,
     )
 
     inicio = time.perf_counter()
-    resultado = solver.resolver(
-        y0,
-        lambda_max=lambda_max,
-        h0=H0,
-        h_min=H_MIN,
-        h_max=h_max,
-        eventos=eventos,
-    )
-    elapsed = time.perf_counter() - inicio
 
-    steps = resultado.pasos_aceptados
-    rejected = resultado.pasos_rechazados
+    bloques_procesados = 0
 
-    return resultado, solver, elapsed, steps, rejected
+    for inicio_idx in range(
+        0,
+        N,
+        bloque,
+    ):
 
-
-def imprimir_escala_por_rayo(steps, rejected):
-    print()
-    print("PASOS POR RAYO")
-    print("-" * 80)
-    q_steps = np.percentile(steps, [0, 25, 50, 75, 95, 99, 100])
-    q_rej = np.percentile(rejected, [0, 50, 95, 99, 100])
-    print(
-        "aceptados  min/25/50/75/95/99/max = "
-        + " / ".join(f"{x:.0f}" for x in q_steps)
-    )
-    print(
-        "rechazados min/50/95/99/max          = "
-        + " / ".join(f"{x:.0f}" for x in q_rej)
-    )
-    print(f"aceptados totales                   = {steps.sum():,}")
-    print(f"rechazados totales                  = {rejected.sum():,}")
-
-
-def benchmark_hmax(metrica, y0):
-    print()
-    print("BENCHMARK h_max")
-    print("=" * 80)
-    print(
-        f"resolucion={RESOLUCION}, FOV={FOV} deg, r0={R0}, "
-        f"lambda_max={LAMBDA_MAX}, r_escape={R0}"
-    )
-    print(
-        f"rtol={RTOL:.1e}, atol={ATOL:.1e}, h0={H0}, h_min={H_MIN}"
-    )
-    print()
-    print(
-        f"{'h_max':>10s} {'tiempo[s]':>12s} {'escape':>10s} "
-        f"{'horizon':>10s} {'maxlam':>10s} {'pasos':>14s} {'rechazos':>14s}"
-    )
-    print("-" * 94)
-
-    resultados = []
-    for h_max in H_MAX_VALUES:
-        resultado, solver, elapsed, steps, rejected = run_case(metrica, y0, h_max)
-        counts = [np.count_nonzero(resultado.status == c) for c in range(6)]
-        print(
-            f"{str(h_max):>10s} {elapsed:12.3f} {counts[STATUS_ESCAPE]:10d} "
-            f"{counts[STATUS_HORIZON]:10d} {counts[STATUS_MAX_LAMBDA]:10d} "
-            f"{steps.sum():14,d} {rejected.sum():14,d}"
+        fin_idx = min(
+            inicio_idx + bloque,
+            N,
         )
-        resultados.append((h_max, resultado, solver, elapsed, steps, rejected))
 
-    return resultados
+        resultado = solver.resolver(
+            y0[inicio_idx:fin_idx],
+            lambda_max=None,
+            h0=H0,
+            h_min=H_MIN,
+            h_max=H_MAX,
+            eventos=eventos,
+            progress=False,
+        )
 
+        estado[
+            inicio_idx:fin_idx
+        ] = resultado.estado
+
+        status[
+            inicio_idx:fin_idx
+        ] = resultado.status
+
+        parametro[
+            inicio_idx:fin_idx
+        ] = resultado.parametro
+
+        pasos_aceptados[
+            inicio_idx:fin_idx
+        ] = resultado.pasos_aceptados
+
+        pasos_rechazados[
+            inicio_idx:fin_idx
+        ] = resultado.pasos_rechazados
+
+        bloques_procesados += 1
+
+    elapsed = (
+        time.perf_counter()
+        - inicio
+    )
+
+    from Solver.ray_tracing import RayTracingResult
+
+    resultado = RayTracingResult(
+        estado=estado,
+        status=status,
+        parametro=parametro,
+        pasos_aceptados=pasos_aceptados,
+        pasos_rechazados=pasos_rechazados,
+    )
+
+    return (
+        resultado,
+        elapsed,
+        bloques_procesados,
+    )
+
+
+# =============================================================================
+# COMPARACIÓN DE RESULTADOS
+# =============================================================================
+
+def comparar_resultados(
+    referencia,
+    prueba,
+):
+
+    status_diferentes = np.count_nonzero(
+        referencia.status
+        != prueba.status
+    )
+
+    pasos_diff = np.max(
+        np.abs(
+            referencia.pasos_aceptados
+            - prueba.pasos_aceptados
+        )
+    )
+
+    rechazos_diff = np.max(
+        np.abs(
+            referencia.pasos_rechazados
+            - prueba.pasos_rechazados
+        )
+    )
+
+    estado_error = np.max(
+        np.abs(
+            referencia.estado
+            - prueba.estado
+        )
+    )
+
+    parametro_error = np.max(
+        np.abs(
+            referencia.parametro
+            - prueba.parametro
+        )
+    )
+
+    return (
+        status_diferentes,
+        pasos_diff,
+        rechazos_diff,
+        estado_error,
+        parametro_error,
+    )
+
+
+# =============================================================================
+# ESTADOS
+# =============================================================================
+
+def contar_estados(resultado):
+
+    return {
+        "escape": np.count_nonzero(
+            resultado.status
+            == STATUS_ESCAPE
+        ),
+
+        "horizon": np.count_nonzero(
+            resultado.status
+            == STATUS_HORIZON
+        ),
+
+        "max_lambda": np.count_nonzero(
+            resultado.status
+            == STATUS_MAX_LAMBDA
+        ),
+
+        "step_failure": np.count_nonzero(
+            resultado.status
+            == STATUS_STEP_FAILURE
+        ),
+    }
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
 
 def main():
-    global RESOLUCION, FOV, R0
 
-    size = int(os.environ.get("RT_TEST_SIZE", RESOLUCION[0]))
-    RESOLUCION = (size, size)
-    FOV = float(os.environ.get("RT_TEST_FOV", FOV))
-    R0 = float(os.environ.get("RT_TEST_R0", R0))
-
-    metrica = Schwarzschild(M=M)
-    x0, tetrada = construir_observador(metrica)
-    _, y0 = construir_rayos(metrica, x0, tetrada)
-
-    print("=" * 80)
-    print("SCHWARZSCHILD — RAY TRACING DIAGNOSTIC / PERFORMANCE TEST")
-    print("=" * 80)
-    print(f"resolution = {RESOLUCION}")
-    print(f"FOV        = {FOV} deg")
-    print(f"r0         = {R0}")
-    print(f"r_stop     = {R_STOP}")
-    print(f"r_escape   = {R0}")
-    print(f"lambda_max = {LAMBDA_MAX}")
-
-    diagnostico_inicial(metrica, y0)
-
-    print()
-    print("CORRIDA DE REFERENCIA")
-    print("=" * 80)
-    resultado, solver, elapsed, steps, rejected = run_case(metrica, y0, 0.1)
-    print(f"tiempo = {elapsed:.3f} s")
-    imprimir_estados(resultado.status)
-    imprimir_trabajo(solver)
-    imprimir_escala_por_rayo(steps, rejected)
-
-    total_steps = int(steps.sum())
-    print()
-    print("DECISION SOBRE AGRUPAMIENTO POR h")
-    print("-" * 80)
-    print(f"pasos por rayo totales               = {total_steps:,}")
-    print(f"evaluaciones RHS teoricas (x7)       = {7 * total_steps:,}")
+    print("=" * 90)
     print(
-        "El agrupamiento solo puede mejorar si reduce costes de memoria/allocation "
-        "o permite kernels con paso fijo; no reduce automaticamente estas etapas RK45."
+        "SCHWARZSCHILD — BENCHMARK DE TAMAÑO DE BATCH"
+    )
+    print("=" * 90)
+
+    print(
+        f"resolución        = {RESOLUCION}"
     )
 
-    resultados = benchmark_hmax(metrica, y0)
+    print(
+        f"rayos             = "
+        f"{SIZE * SIZE:,}"
+    )
 
-    ref_counts = np.bincount(resultado.status, minlength=6)
-    candidates = []
-    for h_max, result_i, solver_i, time_i, steps_i, rejected_i in resultados:
-        counts_i = np.bincount(result_i.status, minlength=6)
-        same_physics = (
-            counts_i[STATUS_ESCAPE] == ref_counts[STATUS_ESCAPE]
-            and counts_i[STATUS_HORIZON] == ref_counts[STATUS_HORIZON]
-        )
-        if same_physics:
-            candidates.append((time_i, h_max))
+    print(
+        f"FOV               = "
+        f"{FOV:.2f}°"
+    )
+
+    print(
+        f"R0                = "
+        f"{R0:.6f}"
+    )
+
+    print(
+        f"rtol / atol       = "
+        f"{RTOL:.1e} / {ATOL:.1e}"
+    )
+
+    print(
+        f"h0 / h_max       = "
+        f"{H0:.3e} / {H_MAX:.3e}"
+    )
+
+    metrica = Schwarzschild(
+        M=M
+    )
+
+    x0, tetrada = construir_observador(
+        metrica
+    )
+
+    _, y0 = construir_rayos(
+        x0,
+        tetrada,
+    )
+
+    eventos = construir_eventos()
+
+    diagnostico_camara(
+        metrica,
+        y0,
+    )
+
+    # Un único solver para todas las pruebas.
+    # Así el GeodesicaEvaluator se construye una sola vez.
+    solver = SolverRayTracing(
+        metrica,
+        rtol=RTOL,
+        atol=ATOL,
+    )
+
+    # -------------------------------------------------------------------------
+    # REFERENCIA
+    # -------------------------------------------------------------------------
 
     print()
-    print("CONCLUSION AUTOMATICA DEL SWEEP")
-    print("-" * 80)
-    if candidates:
-        best_time, best_h = min(candidates)
-        print(f"mejor h_max dentro del sweep = {best_h}")
-        print(f"tiempo                         = {best_time:.3f} s")
+    print("=" * 90)
+    print("REFERENCIA — BATCH COMPLETO")
+    print("=" * 90)
+
+    referencia, tiempo_ref = resolver_completo(
+        solver,
+        y0,
+        eventos,
+    )
+
+    counts = contar_estados(
+        referencia
+    )
+
+    print(
+        f"tiempo             = "
+        f"{tiempo_ref:.6f} s"
+    )
+
+    print(
+        f"escape             = "
+        f"{counts['escape']:,}"
+    )
+
+    print(
+        f"horizon            = "
+        f"{counts['horizon']:,}"
+    )
+
+    print(
+        f"max_lambda         = "
+        f"{counts['max_lambda']:,}"
+    )
+
+    print(
+        f"step_failure       = "
+        f"{counts['step_failure']:,}"
+    )
+
+    print(
+        f"pasos aceptados    = "
+        f"{referencia.pasos_aceptados.sum():,}"
+    )
+
+    print(
+        f"rechazos           = "
+        f"{referencia.pasos_rechazados.sum():,}"
+    )
+
+    # -------------------------------------------------------------------------
+    # SWEEP
+    # -------------------------------------------------------------------------
+
+    print()
+    print("=" * 90)
+    print("SWEEP DE TAMAÑO DE BLOQUE")
+    print("=" * 90)
+
+    print(
+        f"{'bloque':>10s} "
+        f"{'n bloques':>12s} "
+        f"{'tiempo [s]':>14s} "
+        f"{'speedup':>10s} "
+        f"{'escape':>10s} "
+        f"{'horizon':>10s} "
+        f"{'Δ estado':>10s} "
+        f"{'Δ y máx':>14s}"
+    )
+
+    print(
+        "-" * 90
+    )
+
+    resultados = []
+
+    # Para evitar introducir sesgo por el orden de las pruebas,
+    # hacemos primero algunos warmups baratos con bloques pequeños.
+    for bloque in BLOQUES:
+
+        if bloque is None:
+
+            resultado = referencia
+            elapsed = tiempo_ref
+            n_bloques = 1
+
+        else:
+
+            (
+                resultado,
+                elapsed,
+                n_bloques,
+            ) = resolver_bloques(
+                solver,
+                y0,
+                eventos,
+                bloque,
+            )
+
+        (
+            status_diff,
+            pasos_diff,
+            rechazos_diff,
+            estado_error,
+            parametro_error,
+        ) = comparar_resultados(
+            referencia,
+            resultado,
+        )
+
+        speedup = (
+            tiempo_ref / elapsed
+        )
+
+        print(
+            f"{str(bloque):>10s} "
+            f"{n_bloques:12d} "
+            f"{elapsed:14.6f} "
+            f"{speedup:10.4f} "
+            f"{np.count_nonzero(resultado.status == STATUS_ESCAPE):10,d} "
+            f"{np.count_nonzero(resultado.status == STATUS_HORIZON):10,d} "
+            f"{status_diff:10,d} "
+            f"{estado_error:14.3e}"
+        )
+
+        resultados.append(
+            {
+                "bloque": bloque,
+                "tiempo": elapsed,
+                "speedup": speedup,
+                "n_bloques": n_bloques,
+                "status_diff": status_diff,
+                "pasos_diff": pasos_diff,
+                "rechazos_diff": rechazos_diff,
+                "estado_error": estado_error,
+                "parametro_error": parametro_error,
+                "resultado": resultado,
+            }
+        )
+
+    # -------------------------------------------------------------------------
+    # ANÁLISIS
+    # -------------------------------------------------------------------------
+
+    candidatos = [
+        r
+        for r in resultados
+        if r["status_diff"] == 0
+    ]
+
+    mejor = min(
+        candidatos,
+        key=lambda r: r["tiempo"],
+    )
+
+    print()
+    print("=" * 90)
+    print("RESULTADO")
+    print("=" * 90)
+
+    print(
+        f"mejor bloque       = "
+        f"{mejor['bloque']}"
+    )
+
+    print(
+        f"tiempo             = "
+        f"{mejor['tiempo']:.6f} s"
+    )
+
+    print(
+        f"speedup            = "
+        f"{mejor['speedup']:.4f}x"
+    )
+
+    print(
+        f"n bloques          = "
+        f"{mejor['n_bloques']}"
+    )
+
+    print()
+
+    if mejor["speedup"] > 1.10:
+
+        print(
+            "→ Hay una mejora de al menos 10% "
+            "al limitar el tamaño del batch."
+        )
+
+        print(
+            "  Vale la pena incorporar un "
+            "batch máximo configurable al solver."
+        )
+
+    elif mejor["speedup"] > 1.03:
+
+        print(
+            "→ Hay una mejora pequeña pero "
+            "medible."
+        )
+
+        print(
+            "  Conviene evaluar el coste de "
+            "mantener bloques fijos."
+        )
+
+    elif mejor["speedup"] > 0.98:
+
+        print(
+            "→ El rendimiento es prácticamente "
+            "equivalente."
+        )
+
+        print(
+            "  El batch completo ya está cerca "
+            "del óptimo."
+        )
+
     else:
-        print("Ningun h_max del sweep reprodujo exactamente los conteos de la referencia.")
-        print("Eso indica que hay que controlar primero la fisica/tolerancia antes de optimizar.")
+
+        print(
+            "→ Separar el batch empeora el "
+            "rendimiento."
+        )
+
+        print(
+            "  Mantener el batch completo."
+        )
+
+    print()
+    print("=" * 90)
+    print("FIN DEL BENCHMARK")
+    print("=" * 90)
 
 
 if __name__ == "__main__":

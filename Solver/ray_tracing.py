@@ -111,8 +111,8 @@ class DiskEvent(SurfaceEvent):
 # solver
 
 class SolverRayTracing:
-    """Integrados batch para geodésicas nulas."""
-    def __init__(self, metrica, *, rtol=1e-7, atol=1e-9, safety=0.9, min_factor=0.2, max_factor=5.0): 
+    """Integrador batch para geodésicas nulas."""
+    def __init__(self, metrica, *, rtol=1e-7, atol=1e-9, safety=0.9, min_factor=0.2, max_factor=5.0, batch_max=8192): 
         self.evaluator = GeodesicaEvaluator(metrica)
         self.dim = self.evaluator.dim
         self.rtol = float(rtol)
@@ -123,6 +123,9 @@ class SolverRayTracing:
         self._coordinate_indices = (self.evaluator._coordinate_indices)
         self._velocity_indices = (self.evaluator._velocity_indices)
         self._buffers = None
+        self.batch_max = int(batch_max)
+        if self.batch_max <= 0:
+            raise ValueError("batch_max debe ser positivo.")
 
     def _ensure_buffers(self, capacity):
         if (self._buffers is not None and self._buffers["capacity"] >= capacity):
@@ -330,7 +333,7 @@ class SolverRayTracing:
             lambda_max = self._lambda_max_auto(y, eventos)
         estado = np.empty_like(y0)
         status = np.full(N, STATUS_ACTIVE, dtype=np.int8)
-        parametro = np.zeros(N) 
+        parametro = np.zeros(N, dtype=float) 
         pasos_aceptados = np.zeros(N, dtype=int)
         pasos_rechazados = np.zeros(N, dtype=int)
 
@@ -340,7 +343,8 @@ class SolverRayTracing:
         ids_active = np.arange(N, dtype=int)
         n_active = N
 
-        self._ensure_buffers(N)
+        batch_max = min(self.batch_max, N)
+        self._ensure_buffers(batch_max)
         b = self._buffers
 
         inicio = time.perf_counter()
@@ -349,11 +353,6 @@ class SolverRayTracing:
         for _ in range(max_steps):
             if n_active == 0:
                 break
-
-            y_batch = y_active[:n_active]
-            h_batch = h_active[:n_active]
-            parametro_batch = parametro_active[:n_active]
-            ids_batch = ids_active[:n_active]
 
             # reporte de avance 
             if progress:
@@ -386,94 +385,105 @@ class SolverRayTracing:
 
                     ultimo_reporte = ahora
 
-            h_trial = b["h_trial"][:n_active]
-            
-            restante = lambda_max - parametro_batch
-            np.minimum(h_batch, restante, out=h_trial)
-
-            y_new, error = self._rk45(y_batch, h_trial)
-
-            accepted = b["accepted"][:n_active]
-            rejected = b["rejected"][:n_active]
-
-            np.less_equal(error, 1.0, out=accepted)
-            np.logical_not(accepted, out=rejected)
-
             finished = np.zeros(n_active, dtype=bool)
 
-            if np.any(rejected):
-                rej_idx = np.flatnonzero(rejected)
-                factor = self._factor_paso(error[rej_idx], np.zeros(len(rej_idx), dtype=bool), out=b["factor"][:len(rej_idx)])
-                h_nuevo = h_batch[rej_idx] * factor
-                fallo = h_nuevo < h_min
+            for inicio_batch in range(0, n_active, batch_max):
+                fin_batch = min(inicio_batch + batch_max, n_active)
+                n_batch = (fin_batch - inicio_batch)
+                y_batch = y_active[inicio_batch:fin_batch]
+                h_batch = h_active[inicio_batch:fin_batch]
+                parametro_batch = parametro_active[inicio_batch:fin_batch]
+                ids_batch = ids_active[inicio_batch:fin_batch]
+                finished_batch = np.zeros(n_batch, dtype=bool)
 
-                if np.any(fallo):
-                    fallo_idx = rej_idx[fallo]
-                    fallo_ids = ids_batch[fallo_idx]
+                h_trial = b["h_trial"][:n_batch]
+            
+                restante = lambda_max - parametro_batch
+                np.minimum(h_batch, restante, out=h_trial)
 
-                    status[fallo_ids] = STATUS_STEP_FAILURE
-                    estado[fallo_ids] = y_batch[fallo_idx]
-                    parametro[fallo_ids] = parametro_active[fallo_idx]
-                    pasos_rechazados[fallo_ids] += 1
-                    finished[fallo_idx] = True
+                y_new, error = self._rk45(y_batch, h_trial)
 
-                if np.any(~fallo):
-                    valid_idx = rej_idx[~fallo]
-                    h_batch[valid_idx] = h_nuevo[~fallo]
-                    pasos_rechazados[ids_batch[valid_idx]] += 1
+                accepted = b["accepted"][:n_batch]
+                rejected = b["rejected"][:n_batch]
 
-            if np.any(accepted):
-                acc_idx = np.flatnonzero(accepted)
-                ids_acc = ids_batch[acc_idx]
+                np.less_equal(error, 1.0, out=accepted)
+                np.logical_not(accepted, out=rejected)
 
-                y_prev = y_batch[acc_idx]
-                y_next = y_new[acc_idx]
-                h_acc = h_trial[acc_idx]
-                error_acc = error[acc_idx]
-                pasos_aceptados[ids_acc] += 1
+                if np.any(rejected):
+                    rej_idx = np.flatnonzero(rejected)
+                    factor = self._factor_paso(error[rej_idx], np.zeros(len(rej_idx), dtype=bool), out=b["factor"][:len(rej_idx)])
+                    h_nuevo = h_batch[rej_idx] * factor
+                    fallo = h_nuevo < h_min
 
-                evento_alpha = np.full(len(acc_idx), np.inf, dtype=float)
-                evento_code = np.full(len(acc_idx), -1, dtype=np.int8)
+                    if np.any(fallo):
+                        fallo_idx = rej_idx[fallo]
+                        fallo_ids = ids_batch[fallo_idx]
 
-                for evento in eventos:
-                    detectado, alpha = evento.detect(y_prev, y_next)
-                    tomar = (detectado & (alpha < evento_alpha))
+                        status[fallo_ids] = STATUS_STEP_FAILURE
+                        estado[fallo_ids] = y_batch[fallo_idx]
+                        parametro[fallo_ids] = parametro_active[fallo_idx]
+                        pasos_rechazados[fallo_ids] += 1
+                        finished_batch[fallo_idx] = True
 
-                    evento_alpha[tomar] = alpha[tomar]
-                    evento_code[tomar] = evento.code
+                    if np.any(~fallo):
+                        valid_idx = rej_idx[~fallo]
+                        h_batch[valid_idx] = h_nuevo[~fallo]
+                        pasos_rechazados[ids_batch[valid_idx]] += 1
 
-                ocurrio_evento = np.isfinite(evento_alpha)
+                if np.any(accepted):
+                    acc_idx = np.flatnonzero(accepted)
+                    ids_acc = ids_batch[acc_idx]
 
-                normales = ~ocurrio_evento
-                if np.any(normales):
-                    normal_idx = acc_idx[normales]
-                    y_batch[normal_idx] = y_next[normales] 
-                    parametro_active[normal_idx] += (h_acc[normales])
-                    factor = self._factor_paso(error_acc[normales], np.ones(np.sum(normales), dtype=bool), out=b["factor"][:np.sum(normales)])
-                    h_active[normal_idx] *= factor
-                    h_active[normal_idx] = np.clip(h_active[normal_idx], h_min, h_max) 
+                    y_prev = y_batch[acc_idx]
+                    y_next = y_new[acc_idx]
+                    h_acc = h_trial[acc_idx]
+                    error_acc = error[acc_idx]
+                    pasos_aceptados[ids_acc] += 1
 
-                if np.any(ocurrio_evento):
-                    event_local = acc_idx[ocurrio_evento]
-                    event_ids = ids_acc[ocurrio_evento]
-                    alpha_event = (evento_alpha[ocurrio_evento])
-                    y_hit = (y_prev[ocurrio_evento] + alpha_event[:, None] * (y_next[ocurrio_evento] - y_prev[ocurrio_evento]))
-                    parametro_event = (parametro_active[event_local] + alpha_event * h_acc[ocurrio_evento])
-                    estado[event_ids] = y_hit
-                    parametro[event_ids] = parametro_event
-                    status[event_ids] = evento_code[ocurrio_evento]
-                    finished[event_local] = True
+                    evento_alpha = np.full(len(acc_idx), np.inf, dtype=float)
+                    evento_code = np.full(len(acc_idx), -1, dtype=np.int8)
 
-                if np.any(normales):
-                    normal_idx = acc_idx[normales]
-                    llego = (parametro_active[normal_idx] >= lambda_max - EPS)
-                    if np.any(llego):
-                        lambda_idx = normal_idx[llego]
-                        lambda_ids = (ids_batch[lambda_idx])
-                        estado[lambda_ids] = y_batch[lambda_idx]
-                        parametro[lambda_ids] = parametro_active[lambda_idx]
-                        status[lambda_ids] = STATUS_MAX_LAMBDA
-                        finished[lambda_idx] = True
+                    for evento in eventos:
+                        detectado, alpha = evento.detect(y_prev, y_next)
+                        tomar = (detectado & (alpha < evento_alpha))
+
+                        evento_alpha[tomar] = alpha[tomar]
+                        evento_code[tomar] = evento.code
+
+                    ocurrio_evento = np.isfinite(evento_alpha)
+
+                    normales = ~ocurrio_evento
+                    if np.any(normales):
+                        normal_idx = acc_idx[normales]
+                        y_batch[normal_idx] = y_next[normales] 
+                        parametro_active[normal_idx] += (h_acc[normales])
+                        factor = self._factor_paso(error_acc[normales], np.ones(np.sum(normales), dtype=bool), out=b["factor"][:np.sum(normales)])
+                        h_active[normal_idx] *= factor
+                        h_active[normal_idx] = np.clip(h_active[normal_idx], h_min, h_max) 
+
+                    if np.any(ocurrio_evento):
+                        event_local = acc_idx[ocurrio_evento]
+                        event_ids = ids_acc[ocurrio_evento]
+                        alpha_event = (evento_alpha[ocurrio_evento])
+                        y_hit = (y_prev[ocurrio_evento] + alpha_event[:, None] * (y_next[ocurrio_evento] - y_prev[ocurrio_evento]))
+                        parametro_event = (parametro_active[event_local] + alpha_event * h_acc[ocurrio_evento])
+                        estado[event_ids] = y_hit
+                        parametro[event_ids] = parametro_event
+                        status[event_ids] = evento_code[ocurrio_evento]
+                        finished_batch[event_local] = True
+
+                    if np.any(normales):
+                        normal_idx = acc_idx[normales]
+                        llego = (parametro_active[normal_idx] >= lambda_max - EPS)
+                        if np.any(llego):
+                            lambda_idx = normal_idx[llego]
+                            lambda_ids = (ids_batch[lambda_idx])
+                            estado[lambda_ids] = y_batch[lambda_idx]
+                            parametro[lambda_ids] = parametro_active[lambda_idx]
+                            status[lambda_ids] = STATUS_MAX_LAMBDA
+                            finished_batch[lambda_idx] = True
+
+                finished[inicio_batch:fin_batch] = finished_batch
 
             if np.any(finished):
                 keep_idx = np.flatnonzero(~finished)
@@ -491,7 +501,7 @@ class SolverRayTracing:
             parametro[ids_remaining] = parametro_active[:n_active]
 
         if progress:
-            elapsed = time.perf_counter() - inicio
+            elapsed = (time.perf_counter() - inicio)
             if n_active == 0:
                 print(
                     f"\rIntegrando ["
